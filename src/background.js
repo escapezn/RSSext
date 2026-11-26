@@ -141,7 +141,10 @@ async function performScan(options = {}) {
         if (result.status === "fulfilled") {
           try {
             const xmlText = result.value;
-            const freshItems = parseFeed(xmlText, source.xmlUrl, ttl);
+            const parsedItems = parseFeed(xmlText, source.xmlUrl, ttl);
+            const freshItems = parsedItems
+              .filter((item) => matchesSourceFilter(item, source.filter))
+              .map(({ _filterMeta, ...dbItem }) => dbItem);
             const siteUrl = extractSiteUrl(xmlText, source.xmlUrl);
 
             // Filtrage des nouveautés par rapport à ce qui est déjà en base OU déjà trouvé dans ce scan
@@ -339,6 +342,99 @@ function extractSiteUrl(xmlString, xmlUrl) {
 }
 
 /**
+ * Parse une chaîne de règles (séparées par virgule ou saut de ligne) en prédicats.
+ * Supporte le format /regex/flags (insensible à la casse par défaut).
+ * @param {string} rawRules
+ * @returns {Array<(text: string) => boolean>}
+ */
+function parseFilterRules(rawRules) {
+  if (!rawRules || typeof rawRules !== "string") return [];
+  return rawRules
+    .split(/[\r\n,，]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => {
+      const regexMatch = token.match(/^\/(.+)\/([gimsuy]*)$/);
+      if (regexMatch) {
+        try {
+          const flags = regexMatch[2].includes("i") ? regexMatch[2] : `${regexMatch[2]}i`;
+          const re = new RegExp(regexMatch[1], flags.replace(/g/g, ""));
+          return (text) => re.test(text);
+        } catch (e) {
+          // Regex invalide : repli sur une correspondance texte simple
+        }
+      }
+      const needle = token.toLowerCase();
+      return (text) => text.toLowerCase().includes(needle);
+    });
+}
+
+/**
+ * Vérifie si un article correspond aux règles de filtrage d'une source.
+ * @param {Object} item - Article parsé (avec _filterMeta).
+ * @param {{include?: string, exclude?: string, matchContent?: boolean}|undefined} filter
+ * @returns {boolean}
+ */
+function matchesSourceFilter(item, filter) {
+  if (!filter) return true;
+  const includeRules = parseFilterRules(filter.include);
+  const excludeRules = parseFilterRules(filter.exclude);
+  if (includeRules.length === 0 && excludeRules.length === 0) return true;
+
+  const meta = item._filterMeta || {};
+  const parts = [item.title || "", meta.categories || "", item.link || ""];
+  if (filter.matchContent && meta.summary) {
+    parts.push(meta.summary);
+  }
+  const haystack = parts.join("\n");
+
+  if (includeRules.length > 0 && !includeRules.some((fn) => fn(haystack))) {
+    return false;
+  }
+  if (excludeRules.length > 0 && excludeRules.some((fn) => fn(haystack))) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Extrait les métadonnées textuelles d'un bloc <item>/<entry> pour le filtrage.
+ * @param {string} block
+ * @returns {{categories: string, summary: string}}
+ */
+function extractItemFilterMeta(block) {
+  const categories = [];
+  const catTags = block.match(/<category(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/category>)/gi) || [];
+  for (const tag of catTags) {
+    const termMatch = tag.match(/term=["']([^"']+)["']/i);
+    if (termMatch && termMatch[1].trim()) {
+      categories.push(decodeEntities(termMatch[1].trim()));
+      continue;
+    }
+    const innerMatch = tag.match(/>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/category>/i);
+    if (innerMatch && innerMatch[1].trim()) {
+      categories.push(decodeEntities(innerMatch[1].trim()));
+    }
+  }
+
+  let rawSummary = "";
+  const summaryMatch = block.match(
+    /<(?:content:encoded|description|summary|content)(?:\s[^>]*)?>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/(?:content:encoded|description|summary|content)>/i,
+  );
+  if (summaryMatch && summaryMatch[1]) {
+    rawSummary = decodeEntities(summaryMatch[1])
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  return {
+    categories: categories.join(" "),
+    summary: rawSummary,
+  };
+}
+
+/**
  * PARSER LIGHT (Regex)
  * Extrait Titre et URL sans utiliser le DOM.
  * @param {string} xmlString - Le contenu XML brut.
@@ -425,7 +521,14 @@ function parseFeed(xmlString, xmlUrl, ttl = 30) {
 
       // On encode l'URL pour générer l'ID
       const id = btoa(encodeURIComponent(link)).replace(/=/g, '');
-      items.push({ id, xmlUrl, title, link, timestamp: pubDate }); // On stocke la vraie date !
+      items.push({
+        id,
+        xmlUrl,
+        title,
+        link,
+        timestamp: pubDate,
+        _filterMeta: extractItemFilterMeta(block),
+      }); // On stocke la vraie date !
     }
   }
   return items;

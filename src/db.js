@@ -119,6 +119,30 @@ export const DB = {
   },
 
   /**
+   * Supprime tous les articles associés à une source sans supprimer la source.
+   * @param {string} xmlUrl - L'URL unique du flux.
+   */
+  async deleteItemsBySource(xmlUrl) {
+    const db = await this.open();
+    const transaction = db.transaction(["items"], "readwrite");
+    const itemStore = transaction.objectStore("items");
+    const index = itemStore.index("xmlUrl");
+    const request = index.openKeyCursor(IDBKeyRange.only(xmlUrl));
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        itemStore.delete(cursor.primaryKey);
+        cursor.continue();
+      }
+    };
+
+    return new Promise((resolve) => {
+      transaction.oncomplete = () => resolve(true);
+    });
+  },
+
+  /**
    * --- GESTION DU BUFFER (ARTICLES ÉPHÉMÈRES) ---
    */
 

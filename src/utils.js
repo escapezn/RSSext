@@ -26,6 +26,10 @@ export function translateUI() {
     const msg = t(el.dataset.i18nTitle);
     if (msg) el.title = msg;
   });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+    const msg = t(el.dataset.i18nPlaceholder);
+    if (msg) el.placeholder = msg;
+  });
 }
 
 /**

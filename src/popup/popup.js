@@ -858,6 +858,9 @@ async function openEditOverlay(source) {
 
   select.value = source.folder || "";
   document.getElementById("edit-notify").checked = source.notify;
+  document.getElementById("edit-filter-include").value = source.filter?.include || "";
+  document.getElementById("edit-filter-exclude").value = source.filter?.exclude || "";
+  document.getElementById("edit-filter-content").checked = Boolean(source.filter?.matchContent);
 
   // On stocke l'URL dans le dataset du dialog pour le submit
   dialog.dataset.currentUrl = source.xmlUrl;
@@ -909,12 +912,36 @@ async function handleDialogSubmit(e) {
   const existingSources = await DB.getSources();
   const prevSource = existingSources.find(s => s.xmlUrl === oldUrl);
 
+  const includeRaw = document.getElementById("edit-filter-include").value.trim();
+  const excludeRaw = document.getElementById("edit-filter-exclude").value.trim();
+  const matchContent = document.getElementById("edit-filter-content").checked;
+
+  const normalizeFilter = (f) => ({
+    include: (f?.include || "").trim(),
+    exclude: (f?.exclude || "").trim(),
+    matchContent: Boolean(f?.matchContent),
+  });
+  const prevFilter = normalizeFilter(prevSource?.filter);
+  const nextFilter = normalizeFilter({
+    include: includeRaw,
+    exclude: excludeRaw,
+    matchContent,
+  });
+  const filterChanged =
+    Boolean(prevSource) &&
+    (prevFilter.include !== nextFilter.include ||
+      prevFilter.exclude !== nextFilter.exclude ||
+      prevFilter.matchContent !== nextFilter.matchContent);
+
   const nextSource = {
     xmlUrl: newUrl,
     title: document.getElementById("edit-name").value,
     folder: folder,
     notify: document.getElementById("edit-notify").checked,
   };
+  if (nextFilter.include || nextFilter.exclude || nextFilter.matchContent) {
+    nextSource.filter = nextFilter;
+  }
   if (prevSource && newUrl === oldUrl && prevSource.siteUrl) {
     nextSource.siteUrl = prevSource.siteUrl;
   }
@@ -923,9 +950,15 @@ async function handleDialogSubmit(e) {
 
   if (oldUrl && newUrl !== oldUrl) {
     await DB.deleteSource(oldUrl);
+  } else if (filterChanged) {
+    await DB.deleteItemsBySource(newUrl);
   }
 
-  chrome.runtime.sendMessage({ action: "scan_now" });
+  if (filterChanged || (oldUrl && newUrl !== oldUrl)) {
+    chrome.runtime.sendMessage({ action: "scan_source", xmlUrl: newUrl });
+  } else {
+    chrome.runtime.sendMessage({ action: "scan_now" });
+  }
 
   dialog.close();
   renderApp();

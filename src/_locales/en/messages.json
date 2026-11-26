@@ -127,6 +127,26 @@
     "message": "Manual",
     "description": "Button to enter feed URL manually"
   },
+  "ui_filter_legend": {
+    "message": "Content Filter",
+    "description": "Legend for source filter settings"
+  },
+  "ui_filter_include": {
+    "message": "Include keywords",
+    "description": "Label for include filter input"
+  },
+  "ui_filter_exclude": {
+    "message": "Exclude keywords",
+    "description": "Label for exclude filter input"
+  },
+  "ui_filter_placeholder": {
+    "message": "Comma or newline separated, /regex/ supported",
+    "description": "Placeholder for filter inputs"
+  },
+  "ui_filter_match_content": {
+    "message": "Also match summary/content",
+    "description": "Checkbox to match item summary/content"
+  },
   "ui_url_label": {
     "message": "URL",
     "description": "Label for source URL input"

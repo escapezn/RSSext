@@ -76,6 +76,20 @@
       <label>
         <input type="checkbox" id="edit-notify"> <span data-i18n="ui_enable_notif">Enable Notifications</span>
       </label>
+      <fieldset class="filter-fieldset">
+        <legend data-i18n="ui_filter_legend">Content Filter</legend>
+        <label>
+          <span data-i18n="ui_filter_include">Include keywords</span>:
+          <textarea id="edit-filter-include" rows="2" data-i18n-placeholder="ui_filter_placeholder"></textarea>
+        </label>
+        <label>
+          <span data-i18n="ui_filter_exclude">Exclude keywords</span>:
+          <textarea id="edit-filter-exclude" rows="2" data-i18n-placeholder="ui_filter_placeholder"></textarea>
+        </label>
+        <label class="filter-checkbox-label">
+          <input type="checkbox" id="edit-filter-content"> <span data-i18n="ui_filter_match_content">Also match summary/content</span>
+        </label>
+      </fieldset>
       <div class="dialog-actions">
         <button type="button" id="delete-source" class="danger" data-i18n="ui_delete_source">Delete Source</button>
         <button type="submit" value="cancel" formnovalidate data-i18n="ui_cancel">Cancel</button>
