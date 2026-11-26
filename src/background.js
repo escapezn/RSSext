@@ -14,20 +14,64 @@ import { DB } from "./db.js";
 import { decodeEntities, addRef, formatTimeAgo, t } from "./utils.js";
 
 // Configuration 
-const DEFAULT_INTERVAL = 30;
+const DEFAULT_INTERVAL_RANGE = "15-30";
 const DEFAULT_TTL = 30;
 const SCAN_BATCH_SIZE = 5;
+const SAME_HOST_DELAY_MIN_MS = 600;
+const SAME_HOST_DELAY_MAX_MS = 1400;
+const LEGACY_INTERVAL_MAP = {
+  5: "0-5",
+  15: "5-15",
+  30: "15-30",
+  60: "30-60",
+  120: "60-120",
+  720: "120-720",
+  1440: "720-1440",
+};
 let isScanning = false;
+
+/**
+ * Parse une chaîne d'intervalle ('min-max') ou une ancienne valeur numérique en bornes (minutes).
+ * @param {string|number} rawInterval
+ * @returns {{ minMinutes: number, maxMinutes: number }}
+ */
+function parseIntervalRange(rawInterval) {
+  const normalized = LEGACY_INTERVAL_MAP[rawInterval] || String(rawInterval || DEFAULT_INTERVAL_RANGE);
+  const parts = normalized.split("-").map((n) => parseInt(n, 10));
+  if (parts.length === 2 && !Number.isNaN(parts[0]) && !Number.isNaN(parts[1])) {
+    const minMinutes = Math.max(0, Math.min(parts[0], parts[1]));
+    const maxMinutes = Math.max(minMinutes, parts[0], parts[1]);
+    return { minMinutes, maxMinutes };
+  }
+  return { minMinutes: 15, maxMinutes: 30 };
+}
+
+/**
+ * Calcule un prochain timestamp de scan aléatoire dans l'intervalle donné.
+ * @param {{ minMinutes: number, maxMinutes: number }} range
+ * @returns {number}
+ */
+function computeNextScanAt({ minMinutes, maxMinutes }) {
+  const minMs = Math.max(15000, minMinutes * 60 * 1000);
+  const maxMs = Math.max(minMs, maxMinutes * 60 * 1000);
+  const delayMs = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+  return Date.now() + delayMs;
+}
+
+/**
+ * Crée ou maintient l'alarme périodique de vérification (1 minute).
+ */
+function ensureScanAlarm() {
+  chrome.alarms.create("rss-scan-alarm", { periodInMinutes: 1 });
+}
 
 /**
  * INITIALISATION
  * Se déclenche à l'installation ou lors d'une mise à jour.
  */
 chrome.runtime.onInstalled.addListener(async () => {
-  const config = await chrome.storage.local.get(["interval"]);
-  const interval = parseInt(config.interval, 10) || DEFAULT_INTERVAL;
-  chrome.alarms.create("rss-scan-alarm", { periodInMinutes: interval });
-  performScan();
+  ensureScanAlarm();
+  performScan({ mode: "all" });
 });
 
 /**
@@ -35,7 +79,8 @@ chrome.runtime.onInstalled.addListener(async () => {
  * Lance un scan immédiat pour rafraîchir les données.
  */
 chrome.runtime.onStartup.addListener(() => {
-  performScan();
+  ensureScanAlarm();
+  performScan({ mode: "all" });
 });
 
 /**
@@ -44,7 +89,7 @@ chrome.runtime.onStartup.addListener(() => {
  */
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "rss-scan-alarm") {
-    performScan();
+    performScan({ mode: "due" });
   } else if (alarm.name.startsWith("retry:")) {
     // Gestion du retry notification (après 15 min)
     const itemId = alarm.name.split(":")[1];
@@ -72,8 +117,114 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 );
 
 /**
+ * Extrait le nom d'hôte d'une URL pour la sérialisation par domaine.
+ * @param {string} url
+ * @returns {string}
+ */
+function getHostname(url) {
+  try {
+    return new URL(url).hostname || "unknown";
+  } catch (e) {
+    return "unknown";
+  }
+}
+
+/**
+ * Exécute des tâches en parallèle avec au plus 1 requête active par domaine
+ * et un délai aléatoire entre deux requêtes vers le même domaine.
+ * @param {Array} sources
+ * @param {Function} worker
+ * @param {number} maxConcurrency
+ */
+async function runDomainAwareScan(sources, worker, maxConcurrency = SCAN_BATCH_SIZE) {
+  const queues = new Map();
+  for (const src of sources) {
+    const host = getHostname(src.xmlUrl);
+    if (!queues.has(host)) queues.set(host, []);
+    queues.get(host).push(src);
+  }
+
+  const hostEntries = Array.from(queues.values());
+  let cursor = 0;
+
+  async function processHostQueue() {
+    while (cursor < hostEntries.length) {
+      const queue = hostEntries[cursor++];
+      for (let i = 0; i < queue.length; i++) {
+        await worker(queue[i]);
+        if (i < queue.length - 1) {
+          const jitter =
+            SAME_HOST_DELAY_MIN_MS +
+            Math.floor(Math.random() * (SAME_HOST_DELAY_MAX_MS - SAME_HOST_DELAY_MIN_MS + 1));
+          await new Promise((resolve) => setTimeout(resolve, jitter));
+        }
+      }
+    }
+  }
+
+  const workerCount = Math.min(maxConcurrency, hostEntries.length);
+  await Promise.all(Array.from({ length: workerCount }, () => processHostQueue()));
+}
+
+/**
+ * Récupère et traite une source individuelle, puis planifie son prochain scan aléatoire.
+ */
+async function scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(source.xmlUrl, { cache: "no-store", signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const xmlText = await response.text();
+
+    const parsedItems = parseFeed(xmlText, source.xmlUrl, ttl);
+    const freshItems = parsedItems
+      .filter((item) => matchesSourceFilter(item, source.filter))
+      .map(({ _filterMeta, ...dbItem }) => dbItem);
+    const siteUrl = extractSiteUrl(xmlText, source.xmlUrl);
+
+    const newItems = freshItems.filter((item) => {
+      if (!existingIds.has(item.id)) {
+        existingIds.add(item.id);
+        return true;
+      }
+      return false;
+    });
+
+    if (newItems.length > 0) {
+      await DB.addItems(newItems);
+      if (source.notify && notifyEnabled) {
+        newItems.forEach((item) => {
+          NotificationSystem.enqueue(item, source, 1);
+        });
+      }
+    }
+
+    const hasSameSiteUrl = source.siteUrl && isSameUrl(source.siteUrl, source.xmlUrl);
+    if ((!source.siteUrl || hasSameSiteUrl) && siteUrl) {
+      source.siteUrl = siteUrl;
+    } else if (hasSameSiteUrl) {
+      delete source.siteUrl;
+    }
+    if (source.error) {
+      delete source.error;
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const normalizedErr = err.name === "AbortError" ? new Error("Timeout (10s)") : err;
+    console.warn(`RSSext: Failed to scan ${source.xmlUrl}`, normalizedErr);
+    source.error = normalizedErr.message || "Unknown error";
+  } finally {
+    source.nextScanAt = computeNextScanAt(intervalRange);
+    await DB.putSource(source);
+  }
+}
+
+/**
  * LOGIQUE DE SCAN PRINCIPALE
- * @param {Object} options - Options de scan ({ mode: 'all'|'failed'|'single', xmlUrl?: string }).
+ * @param {Object} options - Options de scan ({ mode: 'all'|'due'|'failed'|'single', xmlUrl?: string }).
  */
 async function performScan(options = {}) {
   const { mode = "all", xmlUrl = null } = options;
@@ -86,8 +237,10 @@ async function performScan(options = {}) {
 
   try {
     // Récupération de la config
-    const config = await chrome.storage.local.get(["ttl", "notify"]);
+    const config = await chrome.storage.local.get(["ttl", "notify", "interval"]);
     const ttl = parseInt(config.ttl, 10) || DEFAULT_TTL;
+    const intervalRange = parseIntervalRange(config.interval);
+    const notifyEnabled = config.notify !== false;
 
     // 1. Purge du buffer (TTL) avant de commencer
     await DB.purgeOldItems(ttl);
@@ -95,8 +248,11 @@ async function performScan(options = {}) {
 
     // 2. Récupération des sources et des items existants (une seule fois)
     const allSources = await DB.getSources();
+    const now = Date.now();
     let sources = allSources;
-    if (mode === "failed") {
+    if (mode === "due") {
+      sources = allSources.filter((s) => !s.nextScanAt || s.nextScanAt <= now);
+    } else if (mode === "failed") {
       sources = allSources.filter((s) => Boolean(s.error));
     } else if (mode === "single" && xmlUrl) {
       sources = allSources.filter((s) => s.xmlUrl === xmlUrl);
@@ -107,96 +263,12 @@ async function performScan(options = {}) {
     const existingItems = await DB.getAllItems();
     const existingIds = new Set(existingItems.map((i) => i.id));
 
-    // 3. Traitement par lots parallèles
-    for (let i = 0; i < sources.length; i += SCAN_BATCH_SIZE) {
-      const batch = sources.slice(i, i + SCAN_BATCH_SIZE);
-
-      const batchPromises = batch.map((source) => {
-        // Implémentation du Timeout de sécurité (10 secondes)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-        return fetch(source.xmlUrl, { cache: "no-store", signal: controller.signal })
-          .then((response) => {
-            clearTimeout(timeoutId);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.text();
-          })
-          .catch((err) => {
-            clearTimeout(timeoutId);
-            // Si l'erreur est déclenchée par notre AbortController
-            if (err.name === 'AbortError') {
-              throw new Error("Timeout (10s)");
-            }
-            throw err;
-          });
-      });
-
-      const results = await Promise.allSettled(batchPromises);
-
-      // On traite les résultats du lot
-      for (const [index, result] of results.entries()) {
-        const source = batch[index];
-
-        if (result.status === "fulfilled") {
-          try {
-            const xmlText = result.value;
-            const parsedItems = parseFeed(xmlText, source.xmlUrl, ttl);
-            const freshItems = parsedItems
-              .filter((item) => matchesSourceFilter(item, source.filter))
-              .map(({ _filterMeta, ...dbItem }) => dbItem);
-            const siteUrl = extractSiteUrl(xmlText, source.xmlUrl);
-
-            // Filtrage des nouveautés par rapport à ce qui est déjà en base OU déjà trouvé dans ce scan
-            const newItems = freshItems.filter((item) => {
-              if (!existingIds.has(item.id)) {
-                existingIds.add(item.id); // On l'ajoute immédiatement pour bloquer les doublons suivants
-                return true;
-              }
-              return false;
-            });
-
-            if (newItems.length > 0) {
-              await DB.addItems(newItems);
-
-              if (source.notify && config.notify !== false) {
-                newItems.forEach((item) => {
-                  NotificationSystem.enqueue(item, source, 1);
-                });
-              }
-            }
-
-            let sourceDirty = false;
-            const hasSameSiteUrl =
-              source.siteUrl && isSameUrl(source.siteUrl, source.xmlUrl);
-            if ((!source.siteUrl || hasSameSiteUrl) && siteUrl) {
-              source.siteUrl = siteUrl;
-              sourceDirty = true;
-            } else if (hasSameSiteUrl) {
-              delete source.siteUrl;
-              sourceDirty = true;
-            }
-            // Si la source avait une erreur précédemment, on la nettoie
-            if (source.error) {
-              delete source.error;
-              sourceDirty = true;
-            }
-            if (sourceDirty) {
-              await DB.putSource(source);
-            }
-          } catch (err) {
-            console.warn(`RSSext: Failed to parse ${source.xmlUrl}`, err);
-            source.error = err.message || "Parse error";
-            await DB.putSource(source);
-          }
-        } else { // 'rejected'
-          const err = result.reason;
-          console.warn(`RSSext: Failed to fetch ${source.xmlUrl}`, err);
-          source.error = err.message || "Unknown error";
-          await DB.putSource(source);
-        }
-      }
-    }
+    // 3. Traitement sérialisé par domaine avec jitter aléatoire
+    await runDomainAwareScan(
+      sources,
+      (source) => scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange }),
+      SCAN_BATCH_SIZE
+    );
     await updateBadge();
   } catch (err) {
     console.error("RSSext: Scan process failed", err);
@@ -781,16 +853,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "update_settings") {
-    // console.log("RSSext: Settings updated. Refreshing alarm...");
-    
     // Interruption immédiate des notifications en cours
     NotificationSystem.clear();
+    ensureScanAlarm();
 
-    chrome.storage.local.get(["interval"], (res) => {
-      const interval = parseInt(res.interval, 10) || DEFAULT_INTERVAL;
-      chrome.alarms.create("rss-scan-alarm", { periodInMinutes: interval });
+    // Réappliquer le nouvel intervalle aléatoire sur les sources existantes
+    chrome.storage.local.get(["interval"], async (res) => {
+      const range = parseIntervalRange(res.interval);
+      const sources = await DB.getSources();
+      for (const s of sources) {
+        s.nextScanAt = computeNextScanAt(range);
+        await DB.putSource(s);
+      }
     });
-    // On peut aussi lancer un scan immédiat pour appliquer le nouveau TTL
-    performScan();
+    // On lance aussi un scan immédiat pour appliquer le nouveau TTL
+    performScan({ mode: "all" });
   }
 });

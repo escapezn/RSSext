@@ -17,8 +17,18 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("version-display").textContent = `v${manifest.version}`;
 
   // 1. Chargement des paramètres
+  const LEGACY_INTERVAL_MAP = {
+    5: "0-5",
+    15: "5-15",
+    30: "15-30",
+    60: "30-60",
+    120: "60-120",
+    720: "120-720",
+    1440: "720-1440",
+  };
+
   const defaults = {
-    interval: 30,
+    interval: "15-30",
     ttl: 30,
     notify: true,
     hue: 210,
@@ -27,8 +37,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   chrome.storage.local.get(["interval", "ttl", "notify", "hue", "zoom"], (result) => {
     const settings = { ...defaults, ...result };
+    const intervalValue = LEGACY_INTERVAL_MAP[settings.interval] || String(settings.interval);
     
-    document.getElementById("setting-interval").value = settings.interval;
+    document.getElementById("setting-interval").value = intervalValue;
     document.getElementById("setting-ttl").value = settings.ttl;
     document.getElementById("setting-notify").checked = settings.notify;
     document.getElementById("setting-hue").value = settings.hue;
@@ -42,7 +53,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 2. Sauvegarde automatique
   const settingInputs = [
-    { id: "setting-interval", key: "interval", type: "int" },
+    { id: "setting-interval", key: "interval", type: "value" },
     { id: "setting-ttl", key: "ttl", type: "int" },
     { id: "setting-notify", key: "notify", type: "bool" },
     { id: "setting-hue", key: "hue", type: "value" },

@@ -228,31 +228,31 @@
     "description": "Label for interval select"
   },
   "interval_5m": {
-    "message": "5 minutes",
+    "message": "0 - 5 minutes",
     "description": "Interval option"
   },
   "interval_15m": {
-    "message": "15 minutes",
+    "message": "5 - 15 minutes",
     "description": "Interval option"
   },
   "interval_30m": {
-    "message": "30 minutes",
+    "message": "15 - 30 minutes",
     "description": "Interval option"
   },
   "interval_1h": {
-    "message": "1 hour",
+    "message": "30 - 60 minutes",
     "description": "Interval option"
   },
   "interval_2h": {
-    "message": "2 hours",
+    "message": "1 - 2 hours",
     "description": "Interval option"
   },
   "interval_12h": {
-    "message": "12 hours",
+    "message": "2 - 12 hours",
     "description": "Interval option"
   },
   "interval_24h": {
-    "message": "24 hours",
+    "message": "12 - 24 hours",
     "description": "Interval option"
   },
   "options_label_retention": {
