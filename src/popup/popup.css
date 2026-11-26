@@ -84,13 +84,18 @@ main {
     var(--surface) 80%, 
     hsla(var(--border-raw), 0.3) 100%
   );
-  transition: transform 0.3s ease-in, opacity 0.3s ease-in, margin 0.3s ease-in;
+  transition: transform 0.3s ease-in, opacity 0.2s ease, margin 0.3s ease-in, background 0.2s ease;
 }
 
 .item-row.dismissing {
   transform: translateX(-100%);
   opacity: 0;
   margin-bottom: -3rem; /* Repli visuel de l'espace */
+}
+
+.item-row.is-read {
+  opacity: 0.6;
+  background: transparent;
 }
 
 .item-content {
@@ -103,26 +108,54 @@ main {
   text-decoration: none;
   color: var(--text);
   font-size: 0.9rem;
+  font-weight: 600;
   line-height: 1.3;
   flex: 1;
   margin-right: 0.625rem;
 }
 
-.item-link:hover {
+.item-row:not(.is-read) .item-link::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background-color: var(--accent);
+  margin-right: 0.4rem;
+  vertical-align: middle;
+  transform: translateY(-0.06em);
+}
+
+.item-row.is-read .item-link {
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.item-link:hover,
+.item-row.is-read .item-link:hover {
   color: var(--accent);
 }
 
-.discard-btn {
+.read-toggle-btn {
   background: none;
   border: none;
   color: var(--text-dim);
+  opacity: 0.65;
   cursor: pointer;
-  padding: 0.125rem 0.3rem;
-  font-size: 1.1rem;
+  padding: 0.2rem 0.3rem;
+  font-size: 0.95rem;
+  border-radius: 0.25rem;
+  transition: opacity 0.2s, color 0.2s;
 }
 
-.discard-btn:hover {
-  color: var(--danger);
+.read-toggle-btn:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.item-row.is-read .read-toggle-btn {
+  color: var(--accent);
+  opacity: 0.85;
 }
 
 /* Dialog / Overlay */

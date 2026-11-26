@@ -201,6 +201,44 @@ export const DB = {
   },
 
   /**
+   * Met à jour l'état lu/non-lu d'un article sans le masquer de la liste.
+   * @param {string} id - L'ID unique de l'article.
+   * @param {boolean} isRead - Nouvel état de lecture.
+   * @returns {Promise<boolean>}
+   */
+  async setItemRead(id, isRead = true) {
+    return this.setItemsRead([id], isRead);
+  },
+
+  /**
+   * Met à jour l'état lu/non-lu de plusieurs articles en une seule transaction.
+   * @param {Array<string>} ids - Liste des IDs d'articles.
+   * @param {boolean} isRead - Nouvel état de lecture.
+   * @returns {Promise<boolean>}
+   */
+  async setItemsRead(ids, isRead = true) {
+    if (!ids || ids.length === 0) return true;
+    const db = await this.open();
+    const transaction = db.transaction("items", "readwrite");
+    const store = transaction.objectStore("items");
+
+    ids.forEach((id) => {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const item = request.result;
+        if (item) {
+          item.read = Boolean(isRead);
+          store.put(item);
+        }
+      };
+    });
+
+    return new Promise((resolve) => {
+      transaction.oncomplete = () => resolve(true);
+    });
+  },
+
+  /**
    * Purge automatique des données périmées (TTL).
    * Parcourt l'index 'timestamp' pour supprimer tout ce qui est plus vieux que X jours.
    * Assure que la base de données reste minuscule et performante.

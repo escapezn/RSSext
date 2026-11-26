@@ -49,6 +49,7 @@ const SVG_TRASH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12
 const SVG_REFRESH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`;
 
 const SVG_CHECK_ALL = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L7 17l-5-5"></path><path d="M22 10l-7.5 7.5L13 16"></path></svg>`;
+const SVG_CHECK = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const SVG_EXPAND = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>`;
 const SVG_COLLAPSE = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>`;
 const SVG_LIST = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>`;
@@ -188,6 +189,7 @@ async function renderApp() {
 
   const items = await DB.getItems();
   const sources = await DB.getSources();
+  const unreadItems = items.filter(i => !i.read);
 
   const hasErrors = sources.some(s => Boolean(s.error));
   if (refreshAllBtn) refreshAllBtn.classList.toggle("hidden", sources.length === 0);
@@ -251,27 +253,19 @@ async function renderApp() {
     listActions.appendChild(btnExpand);
     listActions.appendChild(btnSources);
     listActions.appendChild(btnCollapse);
-  } else if (viewMode === "date" && items.length > 0) {
-    // Bouton Dismiss All
+  } else if (viewMode === "date" && unreadItems.length > 0) {
+    // Bouton Mark All as Read
     const btnDismiss = document.createElement("button");
+    btnDismiss.id = "mark-all-read";
     btnDismiss.innerHTML = SVG_CHECK_ALL;
     btnDismiss.title = t("action_dismiss_all");
     btnDismiss.onclick = async () => {
       if (confirm(t("ui_confirm_dismiss_all"))) {
-        // Effet visuel "throttlé" (cascade)
-        // Note : On synchronise le délai JS avec l'animation CSS (.item-row transition)
-        // en ajoutant un petit délai progressif (60ms) par item pour l'effet "vague".
-        const rows = Array.from(document.querySelectorAll(".item-row"));
-        rows.forEach((row, index) => {
-          setTimeout(() => row.classList.add("dismissing"), index * 60);
-        });
-
-        // On attend que la cascade totale + la durée de transition (300ms) soient finies
-        await new Promise(resolve => setTimeout(resolve, (rows.length * 60) + 300));
-
-        const promises = items.map(i => DB.hideItem(i.id));
-        await Promise.all(promises);
-        renderApp();
+        const unreadRows = Array.from(document.querySelectorAll(".item-row:not(.is-read)"));
+        const unreadIds = unreadRows.map(r => r.dataset.id).filter(Boolean);
+        await DB.setItemsRead(unreadIds, true);
+        unreadRows.forEach(row => applyRowReadState(row, true));
+        syncUnreadCountersAndBadge();
       }
     };
     listActions.appendChild(btnDismiss);
@@ -292,8 +286,8 @@ async function renderApp() {
     return acc;
   }, {});
 
-  // Mise à jour du badge
-  chrome.action.setBadgeText({ text: items.length > 0 ? items.length.toString() : "" });
+  // Mise à jour du badge (uniquement les articles non lus)
+  chrome.action.setBadgeText({ text: unreadItems.length > 0 ? unreadItems.length.toString() : "" });
 
   // Condition d'affichage de l'état vide :
   // - Mode Date : Pas d'articles
@@ -370,7 +364,8 @@ async function renderApp() {
       const sourcesHtml = sortedSourceUrls.map(url => {
         const data = sourcesInFolder[url];
         const sourceItems = data.items.sort((a, b) => b.timestamp - a.timestamp);
-        folderCount += sourceItems.length;
+        const sourceUnreadCount = sourceItems.filter(i => !i.read).length;
+        folderCount += sourceUnreadCount;
 
         const sourceId = `source:${url}`;
         const isCollapsed = collapsedState[sourceId] ? " collapsed" : "";
@@ -384,7 +379,7 @@ async function renderApp() {
           <div class="source-group">
             <h4 class="collapsible-header source-header${isCollapsed}" data-toggle-id="${sourceId}">
               <button class="chevron-btn" aria-expanded="${ariaExpanded}">${SVG_CHEVRON}</button>
-              <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceItems.length})</span> ${errorHtml}</span>
+              <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceUnreadCount})</span> ${errorHtml}</span>
               <div class="source-actions">
                 <button class="${refreshClass}" data-action="refresh-source" data-url="${escapeHtml(data.url)}" title="${escapeHtml(refreshTitle)}">
                   ${SVG_REFRESH}
@@ -501,24 +496,23 @@ async function renderApp() {
     const id = row.dataset.id;
     const action = btn.dataset.action;
 
-    if (action === "discard" || action === "open") {
-      if (action === "open") {
-        e.preventDefault();
-        // Subtilité critique : On doit marquer l'item comme "lu" (hide) AVANT d'ouvrir l'onglet.
-        // Raison : Ouvrir un onglet actif provoque la fermeture immédiate de la Popup par Chrome,
-        // ce qui tue instantanément ce processus JS. Tout code après tabs.create ne s'exécuterait pas.
-        await DB.hideItem(id);
-        const remaining = feedList.querySelectorAll(".item-row").length - 1;
-        chrome.action.setBadgeText({ text: remaining > 0 ? remaining.toString() : "" });
-        const background = e.ctrlKey || e.metaKey;
-        chrome.tabs.create({ url: btn.href, active: !background });
+    if (action === "open") {
+      e.preventDefault();
+      // Subtilité critique : On doit marquer l'item comme "lu" AVANT d'ouvrir l'onglet.
+      // Raison : Ouvrir un onglet actif provoque la fermeture immédiate de la Popup par Chrome,
+      // ce qui tue instantanément ce processus JS. Tout code après tabs.create ne s'exécuterait pas.
+      if (!row.classList.contains("is-read")) {
+        await DB.setItemRead(id, true);
+        applyRowReadState(row, true);
+        syncUnreadCountersAndBadge(row);
       }
-
-      // Animation de sortie
-      row.classList.add("dismissing");
-
-      if (action === "discard") await DB.hideItem(id);
-      removeRowVisually(id);
+      const background = e.ctrlKey || e.metaKey;
+      chrome.tabs.create({ url: btn.href, active: !background });
+    } else if (action === "toggle-read") {
+      const nextRead = !row.classList.contains("is-read");
+      await DB.setItemRead(id, nextRead);
+      applyRowReadState(row, nextRead);
+      syncUnreadCountersAndBadge(row);
     }
   };
 }
@@ -540,16 +534,19 @@ function renderItemHtml(item, sourceInfo = null) {
     metaContent = `${folderHtml} &bull; ${escapeHtml(sourceInfo.title)} &bull; ${timeAgo}`;
   }
   const metaHtml = `<div class="item-meta">${metaContent}</div>`;
+  const isRead = Boolean(item.read);
+  const rowClass = isRead ? "item-row is-read" : "item-row";
+  const toggleTitle = isRead ? t("action_mark_unread") : t("action_mark_read");
 
   return `
-    <div class="item-row" data-id="${item.id}">
+    <div class="${rowClass}" data-id="${item.id}">
       <div class="item-content">
         <a href="${escapeHtml(addRef(item.link))}" target="_blank" class="item-link no-margin-right" data-action="open">
           ${escapeHtml(item.title)}
         </a>
         ${metaHtml}
       </div>
-      <button class="discard-btn" data-action="discard" title="${t("action_discard")}">×</button>
+      <button class="read-toggle-btn" data-action="toggle-read" aria-pressed="${isRead}" title="${escapeHtml(toggleTitle)}">${SVG_CHECK}</button>
     </div>
   `;
 }
@@ -746,6 +743,65 @@ async function handleDialogSubmit(e) {
 }
 
 /**
+ * Met à jour l'état visuel lu/non-lu d'une ligne d'article.
+ * @param {HTMLElement} row - Élément .item-row cible.
+ * @param {boolean} isRead - Nouvel état de lecture.
+ */
+function applyRowReadState(row, isRead) {
+  if (!row) return;
+  row.classList.toggle("is-read", isRead);
+  const toggleBtn = row.querySelector("button[data-action='toggle-read']");
+  if (toggleBtn) {
+    toggleBtn.setAttribute("aria-pressed", isRead ? "true" : "false");
+    toggleBtn.title = isRead ? t("action_mark_unread") : t("action_mark_read");
+  }
+}
+
+/**
+ * Recalcule les compteurs de non-lus (badge, dossiers, sources, bouton tout marquer lu).
+ * @param {HTMLElement|null} targetRow - Ligne modifiée (optionnel, optimise la maj dossier/source).
+ */
+function syncUnreadCountersAndBadge(targetRow = null) {
+  const unreadCount = document.querySelectorAll(".item-row:not(.is-read)").length;
+  chrome.action.setBadgeText({ text: unreadCount > 0 ? unreadCount.toString() : "" });
+
+  const markAllBtn = document.getElementById("mark-all-read");
+  if (markAllBtn) {
+    markAllBtn.classList.toggle("hidden", unreadCount === 0);
+  }
+
+  if (targetRow) {
+    const sourceGroup = targetRow.closest(".source-group");
+    if (sourceGroup && sourceGroup.isConnected) {
+      const counter = sourceGroup.querySelector(".counter");
+      if (counter) {
+        counter.textContent = `(${sourceGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
+      }
+    }
+    const folderGroup = targetRow.closest(".folder-group");
+    if (folderGroup && folderGroup.isConnected) {
+      const counter = folderGroup.querySelector(".counter");
+      if (counter) {
+        counter.textContent = `(${folderGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
+      }
+    }
+  } else {
+    document.querySelectorAll(".source-group").forEach((sourceGroup) => {
+      const counter = sourceGroup.querySelector(".counter");
+      if (counter) {
+        counter.textContent = `(${sourceGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
+      }
+    });
+    document.querySelectorAll(".folder-group").forEach((folderGroup) => {
+      const counter = folderGroup.querySelector(".counter");
+      if (counter) {
+        counter.textContent = `(${folderGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
+      }
+    });
+  }
+}
+
+/**
  * Supprime visuellement une ligne du DOM avec animation
  * et met à jour les compteurs des dossiers/sources.
  * @param {string} id - L'ID de l'item à supprimer
@@ -834,7 +890,13 @@ function applyScanUIState() {
  * avec les notifications pendant que la popup est ouverte.
  */
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.action === "hide_item_ui" && message.itemId) {
+  if (message.action === "set_item_read_ui" && message.itemId) {
+    const row = document.querySelector(`.item-row[data-id="${message.itemId}"]`);
+    if (row) {
+      applyRowReadState(row, Boolean(message.read));
+      syncUnreadCountersAndBadge(row);
+    }
+  } else if (message.action === "hide_item_ui" && message.itemId) {
     removeRowVisually(message.itemId);
   } else if (message.action === "scan_started") {
     setScanningUI(true, message.mode || "all", message.xmlUrl || null);

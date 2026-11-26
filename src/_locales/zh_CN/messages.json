@@ -3,6 +3,8 @@
   "extDesc": { "message": "主权 RSS 工具。获取精华，告别平庸！", "description": "The description of the extension" },
   "action_open": { "message": "打开", "description": "Label for the open button in notifications" },
   "action_discard": { "message": "丢弃", "description": "Label for the discard button" },
+  "action_mark_read": { "message": "标记为已读", "description": "Tooltip for marking an item as read" },
+  "action_mark_unread": { "message": "标记为未读", "description": "Tooltip for marking an item as unread" },
   "action_dismiss_all": { "message": "全部标记为已读", "description": "Tooltip for dismiss all button" },
   "action_expand_all": { "message": "全部展开", "description": "Tooltip for expand all button" },
   "action_show_sources": { "message": "仅显示源", "description": "Tooltip for show sources button" },

@@ -435,9 +435,9 @@ chrome.notifications.onClicked.addListener(async (notifId) => {
   const item = items.find((i) => i.id === itemId);
   
   if (item) {
-    await DB.hideItem(itemId);
+    await DB.setItemRead(itemId, true);
     updateBadge();
-    chrome.runtime.sendMessage({ action: "hide_item_ui", itemId: itemId }).catch(() => {});
+    chrome.runtime.sendMessage({ action: "set_item_read_ui", itemId: itemId, read: true }).catch(() => {});
     chrome.tabs.create({ url: addRef(item.link) });
   }
   chrome.notifications.clear(notifId);
@@ -451,9 +451,9 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, btnIdx) => {
   NotificationSystem.handledIds.add(notifId); // Marqué comme traité
   chrome.notifications.clear(notifId);
 
-  await DB.hideItem(itemId);
+  await DB.setItemRead(itemId, true);
   updateBadge();
-  chrome.runtime.sendMessage({ action: "hide_item_ui", itemId: itemId }).catch(() => {});
+  chrome.runtime.sendMessage({ action: "set_item_read_ui", itemId: itemId, read: true }).catch(() => {});
 
   if (btnIdx === 0) { // OPEN
     const items = await DB.getAllItems();
@@ -471,11 +471,11 @@ chrome.notifications.onClosed.addListener((notifId, byUser) => {
   const [itemId, attemptStr] = notifId.split(":");
   const attempt = parseInt(attemptStr, 10);
 
-  // Si fermé par l'utilisateur (la croix), on considère ça comme un "Vu/Ignoré" -> On cache
+  // Si fermé par l'utilisateur (la croix), on marque comme lu sans retirer de la liste
   if (byUser) {
-    DB.hideItem(itemId).then(() => {
+    DB.setItemRead(itemId, true).then(() => {
       updateBadge();
-      chrome.runtime.sendMessage({ action: "hide_item_ui", itemId: itemId }).catch(() => {});
+      chrome.runtime.sendMessage({ action: "set_item_read_ui", itemId: itemId, read: true }).catch(() => {});
     });
     return;
   }
@@ -500,7 +500,7 @@ chrome.notifications.onClosed.addListener((notifId, byUser) => {
  */
 async function updateBadge() {
   const items = await DB.getItems();
-  const count = items.length;
+  const count = items.filter((item) => !item.read).length;
   const text = count > 0 ? count.toString() : "";
   chrome.action.setBadgeText({ text });
 }

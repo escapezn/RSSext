@@ -15,6 +15,14 @@
     "message": "Discard",
     "description": "Label for the discard button"
   },
+  "action_mark_read": {
+    "message": "Mark as read",
+    "description": "Tooltip for marking an item as read"
+  },
+  "action_mark_unread": {
+    "message": "Mark as unread",
+    "description": "Tooltip for marking an item as unread"
+  },
   "action_dismiss_all": {
     "message": "Dismiss All",
     "description": "Tooltip for dismiss all button"
