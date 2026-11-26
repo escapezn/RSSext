@@ -368,13 +368,16 @@ async function renderApp() {
         return sourcesInFolder[a].title.localeCompare(sourcesInFolder[b].title);
       });
 
-      let folderCount = 0;
+      let folderUnreadCount = 0;
+      let folderTotalCount = 0;
 
       const sourcesHtml = sortedSourceUrls.map(url => {
         const data = sourcesInFolder[url];
         const sourceItems = data.items.sort((a, b) => b.timestamp - a.timestamp);
         const sourceUnreadCount = sourceItems.filter(i => !i.read).length;
-        folderCount += sourceUnreadCount;
+        const sourceTotalCount = sourceItems.length;
+        folderUnreadCount += sourceUnreadCount;
+        folderTotalCount += sourceTotalCount;
 
         const sourceId = `source:${url}`;
         const isCollapsed = collapsedState[sourceId] ? " collapsed" : "";
@@ -388,7 +391,7 @@ async function renderApp() {
           <div class="source-group">
             <h4 class="collapsible-header source-header${isCollapsed}" data-toggle-id="${sourceId}">
               <button class="chevron-btn" aria-expanded="${ariaExpanded}">${SVG_CHEVRON}</button>
-              <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceUnreadCount})</span> ${errorHtml}</span>
+              <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceUnreadCount}/${sourceTotalCount})</span> ${errorHtml}</span>
               <div class="source-actions">
                 <button class="${refreshClass}" data-action="refresh-source" data-url="${escapeHtml(data.url)}" title="${escapeHtml(refreshTitle)}">
                   ${SVG_REFRESH}${SVG_STOP_SM}
@@ -418,7 +421,7 @@ async function renderApp() {
         <div class="folder-group">
           <h3 class="collapsible-header folder-header${isCollapsed}" data-toggle-id="${folderId.replace(/"/g, "&quot;")}">
             <button class="chevron-btn" aria-expanded="${ariaExpanded}">${SVG_CHEVRON}</button>
-            <span class="folder-tag" ${hueStyle}>${escapeHtml(folder)} <span class="counter">(${folderCount})</span></span>
+            <span class="folder-tag" ${hueStyle}>${escapeHtml(folder)} <span class="counter">(${folderUnreadCount}/${folderTotalCount})</span></span>
           </h3>
           <div class="group-content">
             ${sourcesHtml}
@@ -1021,6 +1024,19 @@ function applyRowReadState(row, isRead) {
 }
 
 /**
+ * Met à jour le compteur "(non-lus/total)" d'un groupe (source ou dossier).
+ * @param {HTMLElement|null} groupEl - Élément .source-group ou .folder-group.
+ */
+function updateGroupCounter(groupEl) {
+  if (!groupEl || !groupEl.isConnected) return;
+  const counter = groupEl.querySelector(".counter");
+  if (!counter) return;
+  const unread = groupEl.querySelectorAll(".item-row:not(.is-read)").length;
+  const total = groupEl.querySelectorAll(".item-row").length;
+  counter.textContent = `(${unread}/${total})`;
+}
+
+/**
  * Recalcule les compteurs de non-lus (badge, dossiers, sources, bouton tout marquer lu).
  * @param {HTMLElement|null} targetRow - Ligne modifiée (optionnel, optimise la maj dossier/source).
  */
@@ -1034,33 +1050,11 @@ function syncUnreadCountersAndBadge(targetRow = null) {
   }
 
   if (targetRow) {
-    const sourceGroup = targetRow.closest(".source-group");
-    if (sourceGroup && sourceGroup.isConnected) {
-      const counter = sourceGroup.querySelector(".counter");
-      if (counter) {
-        counter.textContent = `(${sourceGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
-      }
-    }
-    const folderGroup = targetRow.closest(".folder-group");
-    if (folderGroup && folderGroup.isConnected) {
-      const counter = folderGroup.querySelector(".counter");
-      if (counter) {
-        counter.textContent = `(${folderGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
-      }
-    }
+    updateGroupCounter(targetRow.closest(".source-group"));
+    updateGroupCounter(targetRow.closest(".folder-group"));
   } else {
-    document.querySelectorAll(".source-group").forEach((sourceGroup) => {
-      const counter = sourceGroup.querySelector(".counter");
-      if (counter) {
-        counter.textContent = `(${sourceGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
-      }
-    });
-    document.querySelectorAll(".folder-group").forEach((folderGroup) => {
-      const counter = folderGroup.querySelector(".counter");
-      if (counter) {
-        counter.textContent = `(${folderGroup.querySelectorAll(".item-row:not(.is-read)").length})`;
-      }
-    });
+    document.querySelectorAll(".source-group").forEach(updateGroupCounter);
+    document.querySelectorAll(".folder-group").forEach(updateGroupCounter);
   }
 }
 
@@ -1084,21 +1078,15 @@ function removeRowVisually(id) {
     row.remove();
 
     const remaining = document.querySelectorAll(".item-row").length;
-    chrome.action.setBadgeText({ text: remaining > 0 ? remaining.toString() : "" });
+    const unread = document.querySelectorAll(".item-row:not(.is-read)").length;
+    chrome.action.setBadgeText({ text: unread > 0 ? unread.toString() : "" });
 
     // Si c'était le dernier, on relance le rendu pour afficher l'état vide
     if (remaining === 0) {
       renderApp(); 
     } else {
-      // Mise à jour dynamique des compteurs 
-      if (sourceGroup && sourceGroup.isConnected) {
-        const counter = sourceGroup.querySelector(".counter");
-        if (counter) counter.textContent = `(${sourceGroup.querySelectorAll(".item-row").length})`;
-      }
-      if (folderGroup && folderGroup.isConnected) {
-        const counter = folderGroup.querySelector(".counter");
-        if (counter) counter.textContent = `(${folderGroup.querySelectorAll(".item-row").length})`;
-      }
+      updateGroupCounter(sourceGroup);
+      updateGroupCounter(folderGroup);
     }
   }, 300);
 }
