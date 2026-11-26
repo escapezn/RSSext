@@ -30,6 +30,8 @@
   "error_opml_import": { "message": "导入 OPML 文件出错。", "description": "Error message" },
   "ui_name": { "message": "名称", "description": "Label for source name input" },
   "ui_url_label": { "message": "URL", "description": "Label for source URL input" },
+  "ui_site_url_label": { "message": "网站 URL", "description": "Label for source website URL input" },
+  "ui_site_url_placeholder": { "message": "https://example.com（选填，留空自动提取）", "description": "Placeholder for source website URL input" },
   "ui_folder_label": { "message": "文件夹", "description": "Label for folder input" },
   "ui_add_folder_option": { "message": "添加新文件夹...", "description": "Option to create a new folder" },
   "ui_enable_notif": { "message": "启用通知", "description": "Label for notifications checkbox" },

@@ -129,6 +129,9 @@ async function exportOPML() {
       feedOutline.setAttribute("type", "rss");
       feedOutline.setAttribute("text", f.title);
       feedOutline.setAttribute("xmlUrl", f.xmlUrl);
+      if (f.siteUrl && f.siteUrl !== f.xmlUrl) {
+        feedOutline.setAttribute("htmlUrl", f.siteUrl);
+      }
       folderOutline.appendChild(feedOutline);
     });
 
@@ -206,17 +209,27 @@ async function importOPML(file) {
       }
 
       const title = el.getAttribute("text") || el.getAttribute("title") || url;
+      const htmlUrl = (el.getAttribute("htmlUrl") || "").trim();
 
       // 4. Attribution d'une couleur au dossier (si ce n'est pas la catégorie générale)
       if (folder) await DB.getFolderHue(folder);
 
       // 5. Sauvegarde en base
-      await DB.putSource({
+      const sourceRecord = {
         xmlUrl: url,
         title: title,
         folder: folder,
         notify: true, // Activé par défaut à l'import
-      });
+      };
+      if (htmlUrl && htmlUrl !== url) {
+        try {
+          const parsed = new URL(htmlUrl);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            sourceRecord.siteUrl = parsed.toString();
+          }
+        } catch (e) {}
+      }
+      await DB.putSource(sourceRecord);
       count++;
     }
 

@@ -151,6 +151,14 @@
     "message": "URL",
     "description": "Label for source URL input"
   },
+  "ui_site_url_label": {
+    "message": "Website URL",
+    "description": "Label for source website URL input"
+  },
+  "ui_site_url_placeholder": {
+    "message": "https://example.com (optional, auto-detected if empty)",
+    "description": "Placeholder for source website URL input"
+  },
   "ui_folder_label": {
     "message": "Folder",
     "description": "Label for folder input"

@@ -167,8 +167,13 @@ async function performScan(options = {}) {
             }
 
             let sourceDirty = false;
-            if (siteUrl && source.siteUrl !== siteUrl) {
+            const hasSameSiteUrl =
+              source.siteUrl && isSameUrl(source.siteUrl, source.xmlUrl);
+            if ((!source.siteUrl || hasSameSiteUrl) && siteUrl) {
               source.siteUrl = siteUrl;
+              sourceDirty = true;
+            } else if (hasSameSiteUrl) {
+              delete source.siteUrl;
               sourceDirty = true;
             }
             // Si la source avait une erreur précédemment, on la nettoie
@@ -308,35 +313,54 @@ async function validateFeedUrl(rawUrl, timeoutMs = 5000) {
  * @param {string} xmlUrl - L'URL du flux (pour résoudre les liens relatifs).
  * @returns {string|null} L'URL du site ou null.
  */
+function isSameUrl(a, b) {
+  try {
+    return new URL(a).toString() === new URL(b).toString();
+  } catch (e) {
+    return a === b;
+  }
+}
+
 function extractSiteUrl(xmlString, xmlUrl) {
   const headerMatch = xmlString.match(/^[\s\S]*?(?=<(?:item|entry)[\s>])/i);
   const header = headerMatch ? headerMatch[0] : xmlString;
 
-  let rawLink = "";
+  const candidates = [];
   const rssLinkMatch = header.match(/<link(?:\s[^>]*)?>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/i);
   if (rssLinkMatch && rssLinkMatch[1].trim()) {
-    rawLink = rssLinkMatch[1].trim();
-  } else {
-    const atomLinks = header.match(/<link[^>]+>/gi) || [];
-    for (const linkTag of atomLinks) {
-      if (/rel=["']self["']/i.test(linkTag)) continue;
-      const hrefMatch = linkTag.match(/href=["']([^"']+)["']/i);
-      if (hrefMatch) {
-        rawLink = hrefMatch[1].trim();
-        if (/rel=["']alternate["']/i.test(linkTag)) break;
-      }
-    }
+    candidates.push(rssLinkMatch[1].trim());
   }
 
-  if (!rawLink) return null;
-  rawLink = decodeEntities(rawLink);
-  try {
-    const urlObj = new URL(rawLink, xmlUrl);
-    if (urlObj.protocol === "http:" || urlObj.protocol === "https:") {
-      return urlObj.toString();
+  const atomLinks = header.match(/<link[^>]+>/gi) || [];
+  let fallbackAtom = "";
+  for (const linkTag of atomLinks) {
+    if (/rel=["']self["']/i.test(linkTag)) continue;
+    if (/type=["'][^"']*(?:rss|atom|rdf|xml)[^"']*["']/i.test(linkTag)) continue;
+    const hrefMatch = linkTag.match(/href=["']([^"']+)["']/i);
+    if (hrefMatch) {
+      const href = hrefMatch[1].trim();
+      if (/rel=["']alternate["']/i.test(linkTag)) {
+        candidates.push(href);
+        break;
+      }
+      if (!fallbackAtom) fallbackAtom = href;
     }
-  } catch (e) {
-    // URL invalide ignorée
+  }
+  if (fallbackAtom) candidates.push(fallbackAtom);
+
+  for (let rawLink of candidates) {
+    rawLink = decodeEntities(rawLink);
+    try {
+      const urlObj = new URL(rawLink, xmlUrl);
+      if (
+        (urlObj.protocol === "http:" || urlObj.protocol === "https:") &&
+        !isSameUrl(urlObj.toString(), xmlUrl)
+      ) {
+        return urlObj.toString();
+      }
+    } catch (e) {
+      // URL invalide ignorée
+    }
   }
   return null;
 }

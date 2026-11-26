@@ -154,7 +154,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // Validation avec Entrée dans les champs texte du dialog principal
-  ['edit-name', 'edit-url'].forEach(id => {
+  ['edit-name', 'edit-url', 'edit-site-url'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -640,13 +640,14 @@ function isCommentFeed(feed) {
 /**
  * Ouvre le sélecteur lorsque plusieurs flux valides sont détectés sur la page.
  */
-function openFeedPicker(feeds, fallbackTitle, origin) {
+function openFeedPicker(feeds, fallbackTitle, origin, siteUrl = "") {
   const pickerDialog = document.getElementById("feed-picker-dialog");
   const listEl = document.getElementById("feed-picker-list");
   const manualBtn = document.getElementById("feed-picker-manual");
   if (!pickerDialog || !listEl) {
     openEditOverlay({
       xmlUrl: feeds[0].url,
+      siteUrl,
       title: feeds[0].title || fallbackTitle,
       folder: "",
       notify: true,
@@ -674,6 +675,7 @@ function openFeedPicker(feeds, fallbackTitle, origin) {
       pickerDialog.close();
       openEditOverlay({
         xmlUrl: feed.url,
+        siteUrl,
         title: feed.title || fallbackTitle || t("source_new_title"),
         folder: "",
         notify: true,
@@ -687,6 +689,7 @@ function openFeedPicker(feeds, fallbackTitle, origin) {
       pickerDialog.close();
       openEditOverlay({
         xmlUrl: origin || "",
+        siteUrl,
         title: fallbackTitle || t("source_new_title"),
         folder: "",
         notify: true,
@@ -792,15 +795,17 @@ async function detectAndAddFeed() {
     if (validFeeds.length === 1) {
       openEditOverlay({
         xmlUrl: validFeeds[0].url,
+        siteUrl: tab.url,
         title: validFeeds[0].title || tab.title || t("source_new_title"),
         folder: "",
         notify: true,
       });
     } else if (validFeeds.length > 1) {
-      openFeedPicker(validFeeds, tab.title, origin);
+      openFeedPicker(validFeeds, tab.title, origin, tab.url);
     } else {
       openEditOverlay({
         xmlUrl: origin,
+        siteUrl: tab.url,
         title: tab.title || t("source_new_title"),
         folder: "",
         notify: true,
@@ -831,6 +836,11 @@ async function openEditOverlay(source) {
   const urlInput = document.getElementById("edit-url");
   if (urlInput) {
     urlInput.value = source.xmlUrl;
+  }
+  const siteUrlInput = document.getElementById("edit-site-url");
+  if (siteUrlInput) {
+    const hasDistinctSite = source.siteUrl && !isSameUrl(source.siteUrl, source.xmlUrl);
+    siteUrlInput.value = hasDistinctSite ? source.siteUrl : "";
   }
   
   // Population du Select Dossier
@@ -883,6 +893,22 @@ async function handleDialogSubmit(e) {
 
   const urlInput = document.getElementById("edit-url");
   const newUrl = urlInput ? urlInput.value.trim() : oldUrl;
+  const siteUrlInput = document.getElementById("edit-site-url");
+  const rawSiteUrl = siteUrlInput ? siteUrlInput.value.trim() : "";
+
+  if (rawSiteUrl) {
+    let validSite = false;
+    try {
+      const parsedSite = new URL(rawSiteUrl);
+      validSite = parsedSite.protocol === "http:" || parsedSite.protocol === "https:";
+    } catch (err) {}
+    if (!validSite && siteUrlInput) {
+      siteUrlInput.setCustomValidity("Invalid URL");
+      siteUrlInput.reportValidity();
+      siteUrlInput.addEventListener("input", () => siteUrlInput.setCustomValidity(""), { once: true });
+      return;
+    }
+  }
 
   const saveBtn = e.submitter;
   saveBtn.disabled = true;
@@ -942,7 +968,9 @@ async function handleDialogSubmit(e) {
   if (nextFilter.include || nextFilter.exclude || nextFilter.matchContent) {
     nextSource.filter = nextFilter;
   }
-  if (prevSource && newUrl === oldUrl && prevSource.siteUrl) {
+  if (rawSiteUrl && !isSameUrl(rawSiteUrl, newUrl)) {
+    nextSource.siteUrl = rawSiteUrl;
+  } else if (!siteUrlInput && prevSource && newUrl === oldUrl && prevSource.siteUrl && !isSameUrl(prevSource.siteUrl, newUrl)) {
     nextSource.siteUrl = prevSource.siteUrl;
   }
 
@@ -1062,13 +1090,23 @@ function removeRowVisually(id) {
   }, 300);
 }
 
+function isSameUrl(a, b) {
+  try {
+    return new URL(a).toString() === new URL(b).toString();
+  } catch (e) {
+    return a === b;
+  }
+}
+
 /**
  * Résout l'URL du site web cible pour une source donnée.
  * @param {Object} source - L'objet source.
  * @returns {string} L'URL du site web ou de repli.
  */
 function getSourceSiteUrl(source) {
-  if (source.siteUrl) return source.siteUrl;
+  if (source.siteUrl && !isSameUrl(source.siteUrl, source.xmlUrl)) {
+    return source.siteUrl;
+  }
   try {
     return new URL(source.xmlUrl).origin;
   } catch (e) {
