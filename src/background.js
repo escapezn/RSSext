@@ -73,13 +73,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 /**
  * LOGIQUE DE SCAN PRINCIPALE
+ * @param {Object} options - Options de scan ({ mode: 'all'|'failed'|'single', xmlUrl?: string }).
  */
-async function performScan() {
+async function performScan(options = {}) {
+  const { mode = "all", xmlUrl = null } = options;
   if (!navigator.onLine) return;
   
   // Si un scan est déjà en cours, on annule l'exécution silencieusement
   if (isScanning) return; 
   isScanning = true;
+  chrome.runtime.sendMessage({ action: "scan_started", mode, xmlUrl }).catch(() => {});
 
   try {
     // Récupération de la config
@@ -91,7 +94,16 @@ async function performScan() {
     await updateBadge();
 
     // 2. Récupération des sources et des items existants (une seule fois)
-    const sources = await DB.getSources();
+    const allSources = await DB.getSources();
+    let sources = allSources;
+    if (mode === "failed") {
+      sources = allSources.filter((s) => Boolean(s.error));
+    } else if (mode === "single" && xmlUrl) {
+      sources = allSources.filter((s) => s.xmlUrl === xmlUrl);
+    }
+
+    if (sources.length === 0) return;
+
     const existingItems = await DB.getAllItems();
     const existingIds = new Set(existingItems.map((i) => i.id));
 
@@ -130,6 +142,7 @@ async function performScan() {
           try {
             const xmlText = result.value;
             const freshItems = parseFeed(xmlText, source.xmlUrl, ttl);
+            const siteUrl = extractSiteUrl(xmlText, source.xmlUrl);
 
             // Filtrage des nouveautés par rapport à ce qui est déjà en base OU déjà trouvé dans ce scan
             const newItems = freshItems.filter((item) => {
@@ -150,9 +163,17 @@ async function performScan() {
               }
             }
 
+            let sourceDirty = false;
+            if (siteUrl && source.siteUrl !== siteUrl) {
+              source.siteUrl = siteUrl;
+              sourceDirty = true;
+            }
             // Si la source avait une erreur précédemment, on la nettoie
             if (source.error) {
               delete source.error;
+              sourceDirty = true;
+            }
+            if (sourceDirty) {
               await DB.putSource(source);
             }
           } catch (err) {
@@ -174,7 +195,47 @@ async function performScan() {
   } finally {
     // On libère le verrou quoi qu'il arrive (succès ou erreur)
     isScanning = false;
+    chrome.runtime.sendMessage({ action: "scan_finished", mode, xmlUrl }).catch(() => {});
   }
+}
+
+/**
+ * Extrait l'URL du site web depuis l'en-tête du flux RSS/Atom.
+ * @param {string} xmlString - Le contenu XML brut.
+ * @param {string} xmlUrl - L'URL du flux (pour résoudre les liens relatifs).
+ * @returns {string|null} L'URL du site ou null.
+ */
+function extractSiteUrl(xmlString, xmlUrl) {
+  const headerMatch = xmlString.match(/^[\s\S]*?(?=<(?:item|entry)[\s>])/i);
+  const header = headerMatch ? headerMatch[0] : xmlString;
+
+  let rawLink = "";
+  const rssLinkMatch = header.match(/<link(?:\s[^>]*)?>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/i);
+  if (rssLinkMatch && rssLinkMatch[1].trim()) {
+    rawLink = rssLinkMatch[1].trim();
+  } else {
+    const atomLinks = header.match(/<link[^>]+>/gi) || [];
+    for (const linkTag of atomLinks) {
+      if (/rel=["']self["']/i.test(linkTag)) continue;
+      const hrefMatch = linkTag.match(/href=["']([^"']+)["']/i);
+      if (hrefMatch) {
+        rawLink = hrefMatch[1].trim();
+        if (/rel=["']alternate["']/i.test(linkTag)) break;
+      }
+    }
+  }
+
+  if (!rawLink) return null;
+  rawLink = decodeEntities(rawLink);
+  try {
+    const urlObj = new URL(rawLink, xmlUrl);
+    if (urlObj.protocol === "http:" || urlObj.protocol === "https:") {
+      return urlObj.toString();
+    }
+  } catch (e) {
+    // URL invalide ignorée
+  }
+  return null;
 }
 
 /**
@@ -459,8 +520,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "scan_now") {
-    // console.log("RSSext: Scan manuel déclenché après import.");
-    performScan(); 
+    performScan({ mode: request.mode || "all", xmlUrl: request.xmlUrl || null });
+  }
+
+  if (request.action === "retry_failed") {
+    performScan({ mode: "failed" });
+  }
+
+  if (request.action === "scan_source" && request.xmlUrl) {
+    performScan({ mode: "single", xmlUrl: request.xmlUrl });
+  }
+
+  if (request.action === "get_scan_status") {
+    sendResponse({ isScanning });
   }
 
   if (request.action === "update_settings") {

@@ -19,6 +19,9 @@ const dialog = document.getElementById("edit-dialog");
 const editForm = dialog.querySelector("form");
 const newFolderDialog = document.getElementById("new-folder-dialog");
 const openSettingsBtn = document.getElementById("open-settings");
+const refreshAllBtn = document.getElementById("refresh-all");
+const retryFailedBtn = document.getElementById("retry-failed");
+let activeScanState = { scanning: false, mode: null, xmlUrl: null };
 
 // SVG
 const SVG_CAT = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="icon icon-group-category">
@@ -43,6 +46,7 @@ const SVG_CHEVRON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="
 
 const SVG_EDIT = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
 const SVG_TRASH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+const SVG_REFRESH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`;
 
 const SVG_CHECK_ALL = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L7 17l-5-5"></path><path d="M22 10l-7.5 7.5L13 16"></path></svg>`;
 const SVG_EXPAND = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>`;
@@ -66,6 +70,28 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   translateUI();
   renderApp();
+
+  // Écouteurs de rafraîchissement / retry manuel
+  if (refreshAllBtn) {
+    refreshAllBtn.addEventListener("click", () => {
+      setScanningUI(true, "all");
+      chrome.runtime.sendMessage({ action: "scan_now", mode: "all" });
+    });
+  }
+
+  if (retryFailedBtn) {
+    retryFailedBtn.addEventListener("click", () => {
+      setScanningUI(true, "failed");
+      chrome.runtime.sendMessage({ action: "retry_failed" });
+    });
+  }
+
+  chrome.runtime.sendMessage({ action: "get_scan_status" }, (res) => {
+    if (chrome.runtime.lastError) return;
+    if (res && res.isScanning) {
+      setScanningUI(true, "all");
+    }
+  });
 
   // Écouteur pour ajouter l'onglet courant
   addBtn.addEventListener("click", detectAndAddFeed);
@@ -162,6 +188,10 @@ async function renderApp() {
 
   const items = await DB.getItems();
   const sources = await DB.getSources();
+
+  const hasErrors = sources.some(s => Boolean(s.error));
+  if (refreshAllBtn) refreshAllBtn.classList.toggle("hidden", sources.length === 0);
+  if (retryFailedBtn) retryFailedBtn.classList.toggle("hidden", !hasErrors);
 
   // Pré-chargement des couleurs pour les dossiers
   // Optimisation : On résout les couleurs une seule fois ici pour garantir la cohérence
@@ -307,7 +337,13 @@ async function renderApp() {
       const f = s.folder || t("folder_general");
       if (!structure[f]) structure[f] = {};
       // On utilise l'URL comme clé unique
-      structure[f][s.xmlUrl] = { title: s.title, url: s.xmlUrl, items: [], error: s.error };
+      structure[f][s.xmlUrl] = {
+        title: s.title,
+        url: s.xmlUrl,
+        siteUrl: getSourceSiteUrl(s),
+        items: [],
+        error: s.error
+      };
       urlToFolder[s.xmlUrl] = f;
     });
 
@@ -341,17 +377,22 @@ async function renderApp() {
         const ariaExpanded = collapsedState[sourceId] ? "false" : "true";
 
         const errorHtml = data.error ? `<span class="icon-error" title="${escapeHtml(data.error)}">${SVG_ALERT}</span>` : "";
+        const refreshTitle = data.error ? t("ui_retry_source") : t("ui_refresh_source");
+        const refreshClass = data.error ? "icon-btn has-error" : "icon-btn";
 
         return `
           <div class="source-group">
             <h4 class="collapsible-header source-header${isCollapsed}" data-toggle-id="${sourceId}">
               <button class="chevron-btn" aria-expanded="${ariaExpanded}">${SVG_CHEVRON}</button>
-              <span>${escapeHtml(data.title)} <span class="counter">(${sourceItems.length})</span> ${errorHtml}</span>
+              <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceItems.length})</span> ${errorHtml}</span>
               <div class="source-actions">
-                <button class="icon-btn" data-action="edit-source" data-url="${data.url}" title="${t("ui_edit")}">
+                <button class="${refreshClass}" data-action="refresh-source" data-url="${escapeHtml(data.url)}" title="${escapeHtml(refreshTitle)}">
+                  ${SVG_REFRESH}
+                </button>
+                <button class="icon-btn" data-action="edit-source" data-url="${escapeHtml(data.url)}" title="${t("ui_edit")}">
                   ${SVG_EDIT}
                 </button>
-                <button class="icon-btn" data-action="delete-source" data-url="${data.url}" title="${t("ui_delete")}">
+                <button class="icon-btn" data-action="delete-source" data-url="${escapeHtml(data.url)}" title="${t("ui_delete")}">
                   ${SVG_TRASH}
                 </button>
               </div>
@@ -387,11 +428,23 @@ async function renderApp() {
     feedList.innerHTML = items.map(item => renderItemHtml(item, sourceMap[item.xmlUrl])).join("");
   }
 
+  applyScanUIState();
+
   // Délégation d'événements pour le buffer
   // Performance : Un seul listener sur le conteneur plutôt que N listeners sur chaque bouton.
   feedList.onclick = async (e) => {
-    // 1. Gestion des actions de Source (Edit / Delete)
-    const actionBtn = e.target.closest("button[data-action='edit-source'], button[data-action='delete-source']");
+    // 0. Ouverture du site web de la source (clic sur le titre de la source)
+    const siteLink = e.target.closest("a[data-action='open-site']");
+    if (siteLink) {
+      e.preventDefault();
+      e.stopPropagation();
+      const background = e.ctrlKey || e.metaKey;
+      chrome.tabs.create({ url: siteLink.href, active: !background });
+      return;
+    }
+
+    // 1. Gestion des actions de Source (Refresh / Edit / Delete)
+    const actionBtn = e.target.closest("button[data-action='refresh-source'], button[data-action='edit-source'], button[data-action='delete-source']");
     if (actionBtn) {
       // Subtilité : e.stopPropagation() est crucial ici.
       // Sans cela, le clic remonterait au parent (.collapsible-header)
@@ -399,7 +452,10 @@ async function renderApp() {
       e.stopPropagation(); 
       const url = actionBtn.dataset.url;
       
-      if (actionBtn.dataset.action === "edit-source") {
+      if (actionBtn.dataset.action === "refresh-source") {
+        setScanningUI(true, "single", url);
+        chrome.runtime.sendMessage({ action: "scan_source", xmlUrl: url });
+      } else if (actionBtn.dataset.action === "edit-source") {
         const sources = await DB.getSources();
         const source = sources.find(s => s.xmlUrl === url);
         if (source) openEditOverlay(source);
@@ -414,6 +470,10 @@ async function renderApp() {
 
     const header = e.target.closest(".collapsible-header");
     if (header) {
+      // Pour les sources, seul le clic sur la flèche (.chevron-btn) replie/déplie
+      if (header.classList.contains("source-header") && !e.target.closest(".chevron-btn")) {
+        return;
+      }
       header.classList.toggle("collapsed");
       const isCollapsed = header.classList.contains("collapsed");
       
@@ -660,12 +720,20 @@ async function handleDialogSubmit(e) {
   // Si c'est un nouveau dossier, on s'assure qu'il a une couleur
   if (folder) await DB.getFolderHue(folder);
 
-  await DB.putSource({
+  const existingSources = await DB.getSources();
+  const prevSource = existingSources.find(s => s.xmlUrl === oldUrl);
+
+  const nextSource = {
     xmlUrl: newUrl,
     title: document.getElementById("edit-name").value,
     folder: folder,
     notify: document.getElementById("edit-notify").checked,
-  });
+  };
+  if (prevSource && newUrl === oldUrl && prevSource.siteUrl) {
+    nextSource.siteUrl = prevSource.siteUrl;
+  }
+
+  await DB.putSource(nextSource);
 
   if (oldUrl && newUrl !== oldUrl) {
     await DB.deleteSource(oldUrl);
@@ -717,6 +785,50 @@ function removeRowVisually(id) {
 }
 
 /**
+ * Résout l'URL du site web cible pour une source donnée.
+ * @param {Object} source - L'objet source.
+ * @returns {string} L'URL du site web ou de repli.
+ */
+function getSourceSiteUrl(source) {
+  if (source.siteUrl) return source.siteUrl;
+  try {
+    return new URL(source.xmlUrl).origin;
+  } catch (e) {
+    return source.xmlUrl;
+  }
+}
+
+/**
+ * Met à jour l'état visuel de scan en cours dans la popup.
+ * @param {boolean} scanning - Indique si un scan est en cours.
+ * @param {string|null} mode - Mode de scan ('all'|'failed'|'single').
+ * @param {string|null} xmlUrl - URL de la source ciblée pour 'single'.
+ */
+function setScanningUI(scanning, mode = null, xmlUrl = null) {
+  activeScanState = { scanning, mode, xmlUrl };
+  applyScanUIState();
+}
+
+/**
+ * Applique les classes et états disabled selon activeScanState.
+ */
+function applyScanUIState() {
+  const { scanning, mode, xmlUrl } = activeScanState;
+  if (refreshAllBtn) {
+    refreshAllBtn.disabled = scanning;
+    refreshAllBtn.classList.toggle("spinning", scanning && mode !== "failed" && mode !== "single");
+  }
+  if (retryFailedBtn) {
+    retryFailedBtn.disabled = scanning;
+    retryFailedBtn.classList.toggle("spinning", scanning && mode === "failed");
+  }
+  document.querySelectorAll("button[data-action='refresh-source']").forEach((btn) => {
+    btn.disabled = scanning;
+    btn.classList.toggle("spinning", scanning && mode === "single" && btn.dataset.url === xmlUrl);
+  });
+}
+
+/**
  * Écouteur d'événements globaux provenant du Background
  * Utile pour rafraîchir l'interface si l'utilisateur interagit 
  * avec les notifications pendant que la popup est ouverte.
@@ -724,5 +836,10 @@ function removeRowVisually(id) {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "hide_item_ui" && message.itemId) {
     removeRowVisually(message.itemId);
+  } else if (message.action === "scan_started") {
+    setScanningUI(true, message.mode || "all", message.xmlUrl || null);
+  } else if (message.action === "scan_finished") {
+    setScanningUI(false);
+    renderApp();
   }
 });

@@ -143,6 +143,26 @@
     "message": "Switch to folder sorted view",
     "description": "Tooltip to switch to folder view"
   },
+  "ui_refresh_all": {
+    "message": "Refresh all",
+    "description": "Tooltip for refresh all button"
+  },
+  "ui_retry_failed": {
+    "message": "Retry failed sources",
+    "description": "Tooltip for retry failed sources button"
+  },
+  "ui_refresh_source": {
+    "message": "Refresh source",
+    "description": "Tooltip for refresh single source button"
+  },
+  "ui_retry_source": {
+    "message": "Retry source",
+    "description": "Tooltip for retry single failed source button"
+  },
+  "ui_open_site": {
+    "message": "Open source website",
+    "description": "Tooltip for opening source website"
+  },
   "footer_see_more": {
     "message": "See more",
     "description": "Link to author website"

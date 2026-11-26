@@ -298,6 +298,53 @@ dialog select {
   margin-right: 0;
 }
 
+.source-header {
+  cursor: default;
+}
+
+.source-title-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.source-title-link:hover {
+  text-decoration: underline;
+}
+
+#retry-failed {
+  color: var(--danger);
+}
+
+#retry-failed:hover {
+  color: var(--danger);
+  opacity: 0.8;
+}
+
+#head-buttons button:disabled,
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.icon-btn.has-error {
+  color: var(--danger);
+  opacity: 0.9;
+}
+
+@keyframes rssext-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinning svg {
+  animation: rssext-spin 1s linear infinite;
+}
+
 /* --- Gestion des icônes SVG (Support du Zoom) --- */
 /* Force les SVGs à suivre la taille du texte environnant */
 svg {
