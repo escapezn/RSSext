@@ -47,6 +47,7 @@ const SVG_CHEVRON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="
 const SVG_EDIT = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
 const SVG_TRASH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
 const SVG_REFRESH = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`;
+const SVG_STOP_SM = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-stop"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
 
 const SVG_CHECK_ALL = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L7 17l-5-5"></path><path d="M22 10l-7.5 7.5L13 16"></path></svg>`;
 const SVG_CHECK = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
@@ -72,9 +73,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   translateUI();
   renderApp();
 
-  // Écouteurs de rafraîchissement / retry manuel
+  // Écouteurs de rafraîchissement / retry manuel (et annulation au clic si en cours)
   if (refreshAllBtn) {
     refreshAllBtn.addEventListener("click", () => {
+      if (refreshAllBtn.classList.contains("spinning")) {
+        chrome.runtime.sendMessage({ action: "cancel_scan" });
+        return;
+      }
       setScanningUI(true, "all");
       chrome.runtime.sendMessage({ action: "scan_now", mode: "all" });
     });
@@ -82,6 +87,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (retryFailedBtn) {
     retryFailedBtn.addEventListener("click", () => {
+      if (retryFailedBtn.classList.contains("spinning")) {
+        chrome.runtime.sendMessage({ action: "cancel_scan" });
+        return;
+      }
       setScanningUI(true, "failed");
       chrome.runtime.sendMessage({ action: "retry_failed" });
     });
@@ -382,7 +391,7 @@ async function renderApp() {
               <span><a href="${escapeHtml(data.siteUrl)}" class="source-title-link" data-action="open-site" title="${escapeHtml(t("ui_open_site"))}">${escapeHtml(data.title)}</a> <span class="counter">(${sourceUnreadCount})</span> ${errorHtml}</span>
               <div class="source-actions">
                 <button class="${refreshClass}" data-action="refresh-source" data-url="${escapeHtml(data.url)}" title="${escapeHtml(refreshTitle)}">
-                  ${SVG_REFRESH}
+                  ${SVG_REFRESH}${SVG_STOP_SM}
                 </button>
                 <button class="icon-btn" data-action="edit-source" data-url="${escapeHtml(data.url)}" title="${t("ui_edit")}">
                   ${SVG_EDIT}
@@ -448,6 +457,10 @@ async function renderApp() {
       const url = actionBtn.dataset.url;
       
       if (actionBtn.dataset.action === "refresh-source") {
+        if (actionBtn.classList.contains("spinning")) {
+          chrome.runtime.sendMessage({ action: "cancel_scan" });
+          return;
+        }
         setScanningUI(true, "single", url);
         chrome.runtime.sendMessage({ action: "scan_source", xmlUrl: url });
       } else if (actionBtn.dataset.action === "edit-source") {
@@ -1126,21 +1139,44 @@ function setScanningUI(scanning, mode = null, xmlUrl = null) {
 }
 
 /**
+ * Applique l'état de rotation / arrêt sur un bouton de rafraîchissement.
+ * @param {HTMLElement} btn
+ * @param {boolean} isThisSpinning
+ * @param {boolean} isAnyScanning
+ */
+function syncSpinButtonState(btn, isThisSpinning, isAnyScanning) {
+  if (!btn) return;
+  if (isThisSpinning) {
+    if (!btn.dataset.originalTitle) {
+      btn.dataset.originalTitle = btn.title || "";
+    }
+    btn.title = t("ui_stop_scan");
+    btn.disabled = false;
+    btn.classList.add("spinning");
+  } else {
+    if (btn.dataset.originalTitle !== undefined) {
+      btn.title = btn.dataset.originalTitle;
+      delete btn.dataset.originalTitle;
+    }
+    btn.disabled = isAnyScanning;
+    btn.classList.remove("spinning");
+  }
+}
+
+/**
  * Applique les classes et états disabled selon activeScanState.
  */
 function applyScanUIState() {
   const { scanning, mode, xmlUrl } = activeScanState;
-  if (refreshAllBtn) {
-    refreshAllBtn.disabled = scanning;
-    refreshAllBtn.classList.toggle("spinning", scanning && mode !== "failed" && mode !== "single");
-  }
-  if (retryFailedBtn) {
-    retryFailedBtn.disabled = scanning;
-    retryFailedBtn.classList.toggle("spinning", scanning && mode === "failed");
-  }
+  const isAllSpinning = scanning && mode !== "failed" && mode !== "single";
+  const isFailedSpinning = scanning && mode === "failed";
+
+  syncSpinButtonState(refreshAllBtn, isAllSpinning, scanning);
+  syncSpinButtonState(retryFailedBtn, isFailedSpinning, scanning);
+
   document.querySelectorAll("button[data-action='refresh-source']").forEach((btn) => {
-    btn.disabled = scanning;
-    btn.classList.toggle("spinning", scanning && mode === "single" && btn.dataset.url === xmlUrl);
+    const isSingleSpinning = scanning && mode === "single" && btn.dataset.url === xmlUrl;
+    syncSpinButtonState(btn, isSingleSpinning, scanning);
   });
 }
 

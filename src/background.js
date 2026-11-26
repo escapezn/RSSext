@@ -29,6 +29,7 @@ const LEGACY_INTERVAL_MAP = {
   1440: "720-1440",
 };
 let isScanning = false;
+let scanAbortController = null;
 
 /**
  * Parse une chaîne d'intervalle ('min-max') ou une ancienne valeur numérique en bornes (minutes).
@@ -130,13 +131,35 @@ function getHostname(url) {
 }
 
 /**
+ * Attend un délai en millisecondes, interruptible immédiatement via AbortSignal.
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ */
+function delayWithAbort(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timerId);
+      resolve();
+    };
+    const timerId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
  * Exécute des tâches en parallèle avec au plus 1 requête active par domaine
  * et un délai aléatoire entre deux requêtes vers le même domaine.
  * @param {Array} sources
  * @param {Function} worker
  * @param {number} maxConcurrency
+ * @param {AbortSignal} [signal]
  */
-async function runDomainAwareScan(sources, worker, maxConcurrency = SCAN_BATCH_SIZE) {
+async function runDomainAwareScan(sources, worker, maxConcurrency = SCAN_BATCH_SIZE, signal = null) {
   const queues = new Map();
   for (const src of sources) {
     const host = getHostname(src.xmlUrl);
@@ -149,14 +172,17 @@ async function runDomainAwareScan(sources, worker, maxConcurrency = SCAN_BATCH_S
 
   async function processHostQueue() {
     while (cursor < hostEntries.length) {
+      if (signal && signal.aborted) return;
       const queue = hostEntries[cursor++];
       for (let i = 0; i < queue.length; i++) {
+        if (signal && signal.aborted) return;
         await worker(queue[i]);
+        if (signal && signal.aborted) return;
         if (i < queue.length - 1) {
           const jitter =
             SAME_HOST_DELAY_MIN_MS +
             Math.floor(Math.random() * (SAME_HOST_DELAY_MAX_MS - SAME_HOST_DELAY_MIN_MS + 1));
-          await new Promise((resolve) => setTimeout(resolve, jitter));
+          await delayWithAbort(jitter, signal);
         }
       }
     }
@@ -169,15 +195,32 @@ async function runDomainAwareScan(sources, worker, maxConcurrency = SCAN_BATCH_S
 /**
  * Récupère et traite une source individuelle, puis planifie son prochain scan aléatoire.
  */
-async function scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange }) {
+async function scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange, scanSignal }) {
+  if (scanSignal && scanSignal.aborted) return;
+
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 10000);
+
+  const onScanAbort = () => controller.abort();
+  if (scanSignal) {
+    scanSignal.addEventListener("abort", onScanAbort, { once: true });
+  }
+
+  let wasAbortedByUser = false;
 
   try {
     const response = await fetch(source.xmlUrl, { cache: "no-store", signal: controller.signal });
     clearTimeout(timeoutId);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const xmlText = await response.text();
+    if (scanSignal && scanSignal.aborted) {
+      wasAbortedByUser = true;
+      return;
+    }
 
     const parsedItems = parseFeed(xmlText, source.xmlUrl, ttl);
     const freshItems = parsedItems
@@ -213,12 +256,22 @@ async function scanSingleSource(source, { ttl, notifyEnabled, existingIds, inter
     }
   } catch (err) {
     clearTimeout(timeoutId);
+    if (scanSignal && scanSignal.aborted && !timedOut) {
+      wasAbortedByUser = true;
+      return;
+    }
     const normalizedErr = err.name === "AbortError" ? new Error("Timeout (10s)") : err;
     console.warn(`RSSext: Failed to scan ${source.xmlUrl}`, normalizedErr);
     source.error = normalizedErr.message || "Unknown error";
   } finally {
-    source.nextScanAt = computeNextScanAt(intervalRange);
-    await DB.putSource(source);
+    clearTimeout(timeoutId);
+    if (scanSignal) {
+      scanSignal.removeEventListener("abort", onScanAbort);
+    }
+    if (!wasAbortedByUser) {
+      source.nextScanAt = computeNextScanAt(intervalRange);
+      await DB.putSource(source);
+    }
   }
 }
 
@@ -233,6 +286,8 @@ async function performScan(options = {}) {
   // Si un scan est déjà en cours, on annule l'exécution silencieusement
   if (isScanning) return; 
   isScanning = true;
+  scanAbortController = new AbortController();
+  const scanSignal = scanAbortController.signal;
   chrome.runtime.sendMessage({ action: "scan_started", mode, xmlUrl }).catch(() => {});
 
   try {
@@ -266,16 +321,19 @@ async function performScan(options = {}) {
     // 3. Traitement sérialisé par domaine avec jitter aléatoire
     await runDomainAwareScan(
       sources,
-      (source) => scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange }),
-      SCAN_BATCH_SIZE
+      (source) => scanSingleSource(source, { ttl, notifyEnabled, existingIds, intervalRange, scanSignal }),
+      SCAN_BATCH_SIZE,
+      scanSignal
     );
     await updateBadge();
   } catch (err) {
     console.error("RSSext: Scan process failed", err);
   } finally {
     // On libère le verrou quoi qu'il arrive (succès ou erreur)
+    const aborted = Boolean(scanAbortController && scanAbortController.signal.aborted);
+    scanAbortController = null;
     isScanning = false;
-    chrome.runtime.sendMessage({ action: "scan_finished", mode, xmlUrl }).catch(() => {});
+    chrome.runtime.sendMessage({ action: "scan_finished", mode, xmlUrl, aborted }).catch(() => {});
   }
 }
 
@@ -846,6 +904,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === "scan_source" && request.xmlUrl) {
     performScan({ mode: "single", xmlUrl: request.xmlUrl });
+  }
+
+  if (request.action === "cancel_scan") {
+    if (isScanning && scanAbortController) {
+      scanAbortController.abort();
+    }
   }
 
   if (request.action === "get_scan_status") {

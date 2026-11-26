@@ -471,8 +471,27 @@ dialog select {
   }
 }
 
-.spinning svg {
+.spinning svg:not(.icon-stop) {
   animation: rssext-spin 1s linear infinite;
+}
+
+.icon-stop {
+  display: none;
+}
+
+.spinning:hover svg:not(.icon-stop) {
+  display: none;
+}
+
+.spinning:hover .icon-stop {
+  display: block;
+}
+
+#head-buttons button.spinning:hover,
+.icon-btn.spinning:hover {
+  color: var(--danger);
+  opacity: 1;
+  cursor: pointer;
 }
 
 /* --- Gestion des icônes SVG (Support du Zoom) --- */

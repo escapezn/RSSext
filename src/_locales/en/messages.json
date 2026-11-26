@@ -203,6 +203,10 @@
     "message": "Retry source",
     "description": "Tooltip for retry single failed source button"
   },
+  "ui_stop_scan": {
+    "message": "Stop refresh",
+    "description": "Tooltip for stopping an ongoing scan"
+  },
   "ui_open_site": {
     "message": "Open source website",
     "description": "Tooltip for opening source website"
