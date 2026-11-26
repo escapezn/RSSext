@@ -81,7 +81,7 @@ chrome.runtime.onInstalled.addListener(async () => {
  */
 chrome.runtime.onStartup.addListener(() => {
   ensureScanAlarm();
-  performScan({ mode: "all" });
+  performScan({ mode: "due" });
 });
 
 /**
