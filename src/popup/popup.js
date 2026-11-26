@@ -552,15 +552,162 @@ function renderItemHtml(item, sourceInfo = null) {
 }
 
 /**
- * Détecte un flux RSS sur l'onglet actif et ouvre le formulaire d'ajout.
- * Utilise une injection de script puis une heuristique de repli.
+ * Injecté dans l'onglet actif pour détecter un document XML RSS/Atom ou les liens de flux.
+ */
+function extractPageFeedSignals() {
+  const docType = (document.contentType || "").toLowerCase();
+  const rootName = (document.documentElement?.localName || "").toLowerCase();
+  const xmlViewerRoot = document.querySelector("#webkit-xml-viewer-source-xml");
+  const isXmlDoc =
+    docType.includes("xml") ||
+    docType.includes("rss") ||
+    docType.includes("atom") ||
+    rootName === "rss" ||
+    rootName === "feed" ||
+    rootName === "rdf" ||
+    Boolean(xmlViewerRoot && /<(?:rss|feed|rdf:RDF)(?:\s|>)/i.test(xmlViewerRoot.innerHTML.slice(0, 2048)));
+
+  let xmlTitle = "";
+  if (isXmlDoc) {
+    const titleEl =
+      document.querySelector("channel > title, feed > title") ||
+      xmlViewerRoot?.querySelector("channel > title, feed > title");
+    if (titleEl && titleEl.textContent) {
+      xmlTitle = titleEl.textContent.trim().replace(/\s+/g, " ");
+    }
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = (rawUrl, title = "") => {
+    try {
+      const resolved = new URL(rawUrl, location.href);
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return;
+      const href = resolved.toString();
+      if (seen.has(href)) return;
+      seen.add(href);
+      candidates.push({ url: href, title: (title || "").trim().replace(/\s+/g, " ") });
+    } catch (e) {}
+  };
+
+  // 1. Balises <link> (alternate / feed)
+  document.querySelectorAll("link[href]").forEach((el) => {
+    const relTokens = (el.getAttribute("rel") || "").toLowerCase().split(/\s+/);
+    if (!relTokens.includes("alternate") && !relTokens.includes("feed")) return;
+
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    const title = el.getAttribute("title") || "";
+    const href = el.getAttribute("href") || "";
+
+    if (/oembed|rsd|opensearch/i.test(type) || /oembed/i.test(title)) return;
+
+    const looksLikeFeedType = /rss|atom|rdf|xml/.test(type);
+    const looksLikeFeedHref = !type && /(?:rss|feed|atom|\.xml)/i.test(href);
+    if (looksLikeFeedType || looksLikeFeedHref) {
+      pushCandidate(href, title);
+    }
+  });
+
+  // 2. Liens <a> dans la page pointant vers un flux probable
+  document.querySelectorAll("a[href]").forEach((el) => {
+    const href = el.getAttribute("href") || "";
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+
+    const text = (el.textContent || "").trim();
+    const title = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+    const combinedLabel = `${text} ${title}`;
+
+    if (/sitemap/i.test(href)) return;
+    const hrefMatch = /(?:^|[/?#._-])(rss|feed|atom)(?:$|[/?#._-])|\.xml(?:$|[?#])/i.test(href);
+    const labelMatch = /\b(rss|atom|xml)\b|\bfeed\b/i.test(combinedLabel);
+    if (hrefMatch || labelMatch) {
+      pushCandidate(href, title || text);
+    }
+  });
+
+  return { isXmlDoc, xmlTitle, candidates };
+}
+
+/**
+ * Détermine si un flux ressemble à un flux de commentaires (à déprioriser).
+ * @param {{url: string, title: string}} feed
+ * @returns {boolean}
+ */
+function isCommentFeed(feed) {
+  return /\/comments?(?:\/|$)|comment/i.test(feed.url) || /\bcomments?\b|评论/i.test(feed.title);
+}
+
+/**
+ * Ouvre le sélecteur lorsque plusieurs flux valides sont détectés sur la page.
+ */
+function openFeedPicker(feeds, fallbackTitle, origin) {
+  const pickerDialog = document.getElementById("feed-picker-dialog");
+  const listEl = document.getElementById("feed-picker-list");
+  const manualBtn = document.getElementById("feed-picker-manual");
+  if (!pickerDialog || !listEl) {
+    openEditOverlay({
+      xmlUrl: feeds[0].url,
+      title: feeds[0].title || fallbackTitle,
+      folder: "",
+      notify: true,
+    });
+    return;
+  }
+
+  listEl.innerHTML = "";
+  feeds.forEach((feed) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "feed-picker-item";
+
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "feed-picker-title";
+    titleSpan.textContent = feed.title || fallbackTitle || feed.url;
+
+    const urlSpan = document.createElement("span");
+    urlSpan.className = "feed-picker-url";
+    urlSpan.textContent = feed.url;
+
+    btn.appendChild(titleSpan);
+    btn.appendChild(urlSpan);
+    btn.addEventListener("click", () => {
+      pickerDialog.close();
+      openEditOverlay({
+        xmlUrl: feed.url,
+        title: feed.title || fallbackTitle || t("source_new_title"),
+        folder: "",
+        notify: true,
+      });
+    });
+    listEl.appendChild(btn);
+  });
+
+  if (manualBtn) {
+    manualBtn.onclick = () => {
+      pickerDialog.close();
+      openEditOverlay({
+        xmlUrl: origin || "",
+        title: fallbackTitle || t("source_new_title"),
+        folder: "",
+        notify: true,
+      });
+    };
+  }
+
+  pickerDialog.showModal();
+}
+
+/**
+ * Détecte un flux RSS sur l'onglet actif (y compris XML ouvert directement) et ouvre le formulaire d'ajout.
  */
 async function detectAndAddFeed() {
+  if (addBtn.disabled) return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
   let origin = "";
-  let finalUrl = null;
+  addBtn.disabled = true;
+  addBtn.classList.add("detecting");
 
   try {
     if (!tab.url) throw new Error("Invalid URL");
@@ -570,66 +717,108 @@ async function detectAndAddFeed() {
 
     if (!urlObj.protocol.startsWith("http")) throw new Error("System page");
 
-    // ÉTAPE 1 : Détection par le code (le "Graal")
-    // On injecte un script car la Popup n'a pas accès direct au DOM de l'onglet actif (isolation).
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const links = Array.from(
-          document.querySelectorAll('link[rel="alternate"]'),
-        );
-        const rss = links.find(
-          (l) =>
-            (l.type.includes("rss") || l.type.includes("atom")) &&
-            !l.title.includes("oEmbed"),
-        );
-        return rss ? rss.href : null;
-      },
+    let pageSignals = { isXmlDoc: false, xmlTitle: "", candidates: [] };
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: extractPageFeedSignals,
+      });
+      if (result) pageSignals = result;
+    } catch (e) {
+      // Certaines pages XML ou restreintes peuvent bloquer l'injection : on continue avec tab.url
+    }
+
+    // ÉTAPE 1 : Vérifier si l'onglet courant lui-même est un flux RSS/Atom XML
+    const currentCheck = await chrome.runtime.sendMessage({
+      action: "test_url",
+      url: tab.url,
     });
+    if (currentCheck && currentCheck.valid) {
+      openEditOverlay({
+        xmlUrl: currentCheck.url || tab.url,
+        title: currentCheck.title || pageSignals.xmlTitle || tab.title || t("source_new_title"),
+        folder: "",
+        notify: true,
+      });
+      return;
+    }
 
-    finalUrl = result;
+    // ÉTAPE 2 : Vérifier les candidats extraits du DOM (<link> et <a>)
+    const domTitleMap = new Map();
+    const domUrls = [];
+    for (const c of pageSignals.candidates) {
+      domUrls.push(c.url);
+      if (c.title) domTitleMap.set(c.url, c.title);
+    }
 
-    // ÉTAPE 2 : Si rien n'est trouvé, on lance la prédiction (ton snippet)
-    // On passe par le Background (message) pour faire les fetchs afin de contourner
-    // les restrictions CORS (Cross-Origin Resource Sharing) strictes de la Popup.
-    if (!finalUrl) {
-      const patterns = [
-        `${origin}/feed/`,
-        `${origin}/rss/`,
-        `${origin}/rss.xml`,
-      ];
-
-      for (const url of patterns) {
-        // Appelle le background script
-        const check = await chrome.runtime.sendMessage({
-          action: "test_url",
-          url: url,
-        });
-        if (check && check.valid) {
-          finalUrl = url;
-          break; // Gagné, on s'arrête
-        }
+    let validFeeds = [];
+    if (domUrls.length > 0) {
+      const probeRes = await chrome.runtime.sendMessage({
+        action: "probe_feeds",
+        urls: domUrls,
+      });
+      if (probeRes && Array.isArray(probeRes.feeds)) {
+        validFeeds = probeRes.feeds.map((f) => ({
+          url: f.url,
+          title: f.title || domTitleMap.get(f.url) || "",
+        }));
       }
     }
 
-    // ÉTAPE 3 : Ouverture de l'overlay (avec l'URL trouvée ou l'origine par défaut)
-    openEditOverlay({
-      xmlUrl: finalUrl || origin,
-      title: tab.title,
-      folder: "",
-      notify: true,
-    });
+    // ÉTAPE 3 : Si rien n'est trouvé dans le DOM, tester les chemins classiques
+    if (validFeeds.length === 0) {
+      const patterns = [
+        `${origin}/feed/`,
+        `${origin}/feed`,
+        `${origin}/rss/`,
+        `${origin}/rss.xml`,
+        `${origin}/atom.xml`,
+        `${origin}/feed.xml`,
+        `${origin}/index.xml`,
+        `${origin}/rss`,
+      ];
+      const fallbackRes = await chrome.runtime.sendMessage({
+        action: "probe_feeds",
+        urls: patterns,
+      });
+      if (fallbackRes && Array.isArray(fallbackRes.feeds)) {
+        validFeeds = fallbackRes.feeds;
+      }
+    }
+
+    // Déprioriser les flux de commentaires
+    validFeeds.sort((a, b) => Number(isCommentFeed(a)) - Number(isCommentFeed(b)));
+
+    if (validFeeds.length === 1) {
+      openEditOverlay({
+        xmlUrl: validFeeds[0].url,
+        title: validFeeds[0].title || tab.title || t("source_new_title"),
+        folder: "",
+        notify: true,
+      });
+    } else if (validFeeds.length > 1) {
+      openFeedPicker(validFeeds, tab.title, origin);
+    } else {
+      openEditOverlay({
+        xmlUrl: origin,
+        title: tab.title || t("source_new_title"),
+        folder: "",
+        notify: true,
+      });
+    }
   } catch (err) {
     if (err.message !== "System page" && err.message !== "Invalid URL") {
       console.error("RSSext: Erreur de détection", err);
     }
-    // En cas d'erreur (page système Chrome), on ouvre quand même l'overlay vide
     openEditOverlay({
       xmlUrl: origin || "",
       title: tab.title || t("source_new_title"),
       folder: "",
       notify: true,
     });
+  } finally {
+    addBtn.disabled = false;
+    addBtn.classList.remove("detecting");
   }
 }
 

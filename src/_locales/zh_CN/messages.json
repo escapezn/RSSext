@@ -35,6 +35,8 @@
   "ui_enable_notif": { "message": "启用通知", "description": "Label for notifications checkbox" },
   "ui_delete_source": { "message": "删除源", "description": "Button to delete a source" },
   "ui_cancel": { "message": "取消", "description": "Cancel button" },
+  "ui_select_feed": { "message": "选择订阅源", "description": "Title for feed picker dialog" },
+  "ui_manual_input": { "message": "手动输入", "description": "Button to enter feed URL manually" },
   "ui_switch_to_date": { "message": "切换到日期排序视图", "description": "Tooltip to switch to date view" },
   "ui_switch_to_folder": { "message": "切换到文件夹排序视图", "description": "Tooltip to switch to folder view" },
   "ui_refresh_all": { "message": "全部刷新", "description": "Tooltip for refresh all button" },

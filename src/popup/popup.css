@@ -349,6 +349,60 @@ dialog select {
   color: var(--danger);
 }
 
+#add-current.detecting {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+#feed-picker-dialog {
+  width: min(22rem, 90vw);
+}
+
+#feed-picker-dialog h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+#feed-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.feed-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  gap: 0.15rem;
+}
+
+.feed-picker-item:hover {
+  border-color: var(--accent);
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.feed-picker-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.feed-picker-url {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
 #retry-failed:hover {
   color: var(--danger);
   opacity: 0.8;

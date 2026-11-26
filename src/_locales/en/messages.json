@@ -119,6 +119,14 @@
     "message": "Name",
     "description": "Label for source name input"
   },
+  "ui_select_feed": {
+    "message": "Select a Feed",
+    "description": "Title for feed picker dialog"
+  },
+  "ui_manual_input": {
+    "message": "Manual",
+    "description": "Button to enter feed URL manually"
+  },
   "ui_url_label": {
     "message": "URL",
     "description": "Label for source URL input"

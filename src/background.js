@@ -200,6 +200,106 @@ async function performScan(options = {}) {
 }
 
 /**
+ * Vérifie si un extrait texte correspond à un flux RSS/Atom/RDF XML.
+ * @param {string} text - Début du document récupéré.
+ * @returns {boolean}
+ */
+function isFeedXml(text) {
+  if (!text) return false;
+  const trimmed = text.replace(/^\uFEFF/, "").trimStart();
+  if (/^<!doctype\s+html\b|^<html[\s>]/i.test(trimmed)) return false;
+  return /<(?:rss|feed|rdf:RDF)(?:\s|>)/i.test(trimmed);
+}
+
+/**
+ * Extrait le titre du flux depuis l'en-tête XML (RSS/Atom).
+ * @param {string} xmlString - Contenu XML (ou extrait d'en-tête).
+ * @returns {string}
+ */
+function extractFeedTitle(xmlString) {
+  if (!xmlString) return "";
+  const headerMatch = xmlString.match(/^[\s\S]*?(?=<(?:item|entry)[\s>])/i);
+  const header = headerMatch ? headerMatch[0] : xmlString;
+  const titleMatch = header.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+  return titleMatch ? decodeEntities(titleMatch[1].trim()).replace(/\s+/g, " ") : "";
+}
+
+/**
+ * Lit au maximum `maxBytes` d'une Response pour valider un flux sans télécharger tout le fichier.
+ * @param {Response} response
+ * @param {number} maxBytes
+ * @returns {Promise<string>}
+ */
+async function readResponseHead(response, maxBytes = 65536) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    return (await response.text()).slice(0, maxBytes);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let result = "";
+  let totalBytes = 0;
+
+  try {
+    while (totalBytes < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      result += decoder.decode(value, { stream: true });
+      if (/<(?:item|entry)[\s>]/i.test(result)) break;
+    }
+    result += decoder.decode();
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return result;
+}
+
+/**
+ * Valide qu'une URL pointe réellement vers un flux RSS/Atom accessible.
+ * @param {string} rawUrl
+ * @param {number} timeoutMs
+ * @returns {Promise<{valid: boolean, url?: string, title?: string}>}
+ */
+async function validateFeedUrl(rawUrl, timeoutMs = 5000) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { valid: false };
+    }
+  } catch (e) {
+    return { valid: false };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(rawUrl, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+      },
+    });
+    if (!response.ok) return { valid: false };
+
+    const headText = await readResponseHead(response);
+    if (!isFeedXml(headText)) return { valid: false };
+
+    return {
+      valid: true,
+      url: response.url || rawUrl,
+      title: extractFeedTitle(headText),
+    };
+  } catch (e) {
+    return { valid: false };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
  * Extrait l'URL du site web depuis l'en-tête du flux RSS/Atom.
  * @param {string} xmlString - Le contenu XML brut.
  * @param {string} xmlUrl - L'URL du flux (pour résoudre les liens relatifs).
@@ -509,14 +609,32 @@ async function updateBadge() {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "test_url") {
-    // On utilise fetch depuis le Service Worker pour éviter les blocages CORS
-    fetch(request.url, { method: "HEAD" })
-      .then((response) => {
-        // On considère l'URL valide si le serveur répond 200 OK
-        sendResponse({ valid: response.ok });
-      })
+    // On utilise fetch GET depuis le Service Worker pour éviter CORS et vérifier le contenu XML réel
+    validateFeedUrl(request.url)
+      .then((res) => sendResponse(res))
       .catch(() => sendResponse({ valid: false }));
     return true; // Obligatoire pour garder le canal ouvert (asynchrone)
+  }
+
+  if (request.action === "probe_feeds") {
+    const urls = Array.isArray(request.urls) ? [...new Set(request.urls)].slice(0, 15) : [];
+    Promise.allSettled(urls.map((u) => validateFeedUrl(u, 4500)))
+      .then((settled) => {
+        const seen = new Set();
+        const validFeeds = [];
+        for (const item of settled) {
+          if (item.status === "fulfilled" && item.value.valid) {
+            const finalUrl = item.value.url;
+            if (!seen.has(finalUrl)) {
+              seen.add(finalUrl);
+              validFeeds.push({ url: finalUrl, title: item.value.title || "" });
+            }
+          }
+        }
+        sendResponse({ feeds: validFeeds });
+      })
+      .catch(() => sendResponse({ feeds: [] }));
+    return true;
   }
 
   if (request.action === "scan_now") {
